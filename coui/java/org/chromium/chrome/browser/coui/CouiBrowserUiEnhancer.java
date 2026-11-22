@@ -129,6 +129,9 @@ public final class CouiBrowserUiEnhancer {
     private static final int ID_URL_BAR = 0x7f010ddd;
     private static final int ID_LOCATION_BAR = 0x7f01071f;
     private static final int ID_LOCATION_BAR_BG = 0x7f010721;
+    private static final int ID_LOCATION_BAR_STATUS = 0x7f010726;
+    private static final int ID_LOCATION_BAR_STATUS_ICON = 0x7f010727;
+    private static final int ID_LOCATION_BAR_STATUS_ICON_VIEW = 0x7f010729;
     private static final int ID_CONTROL_CONTAINER = 0x7f010366;
     private static final int ID_TOOLBAR = 0x7f010d6a;
     private static final int ID_TOOLBAR_CONTAINER = 0x7f010d71;
@@ -290,7 +293,16 @@ public final class CouiBrowserUiEnhancer {
         try {
             Window w = activity.getWindow();
             if (w != null) {
+                boolean dark = isDarkMode(activity);
                 w.setNavigationBarColor(Color.TRANSPARENT);
+                w.setStatusBarColor(dark ? 0xFF141416 : 0xFFF5F7FA);
+                if (Build.VERSION.SDK_INT >= 30) {
+                    WindowInsetsController wic = w.getInsetsController();
+                    if (wic != null) {
+                        int flag = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS;
+                        wic.setSystemBarsAppearance(dark ? 0 : flag, flag);
+                    }
+                }
                 if (Build.VERSION.SDK_INT >= 29) {
                     w.setNavigationBarContrastEnforced(false);
                 }
@@ -373,12 +385,11 @@ public final class CouiBrowserUiEnhancer {
     private static boolean sToolbarFieldsResolved = false;
 
     /**
-     * Styles Titanium Browser's top address bar (ID_LOCATION_BAR) with authentic ColorOS 17
-     * frosted Liquid Glass (transparent ToolbarPhone/control_container + luminous frosted pill +
-     * crisp specular rim + subtle shadow) paired with SurfaceViewBlurController SLOT_ADDRESS_BAR.
-     * Also keeps the floating frosted address bar pinned cleanly at y=0 when Chromium scrolls
-     * Blink's contentOffset to 0 (so scrolling webpage content visibly glides and frosts directly
-     * behind the top address bar pill at 120fps!), while respecting Tab Switcher & Fullscreen mode.
+     * Styles Titanium Browser's top header bar (ID_CONTROL_CONTAINER) as a full-width frosted
+     * Liquid Glass bar matching the bottom 3-piece nav bar (ZERO side-corner leaks or clipped gaps),
+     * and styles the inner address pill (ID_LOCATION_BAR) to 1:1 ColorOS 17 File Manager / Settings
+     * search pill parity (44dp capsule, luminous elevated glass with Kyant0/AndroidLiquidGlass 45°
+     * specular rim, exact ColorOS 17 search magnifying-glass icon on the left, NO Cancel button).
      */
     static void styleTopAddressBarGlass(Activity activity, View root, boolean isDark, boolean realBlur) {
         if (activity == null || root == null) return;
@@ -397,13 +408,20 @@ public final class CouiBrowserUiEnhancer {
                 }
             }
 
+            View urlBar = root.findViewById(ID_URL_BAR);
+            boolean focused = (urlBar != null && urlBar.hasFocus());
+            boolean glassHeaderActive = realBlur && !focused && !inTabSwitcher && !isFullscreen;
+
+            // 1. Full-width Frosted Liquid Glass Top Header Backdrop on ID_CONTROL_CONTAINER
+            //    (matches titanium-address-bar.jpg structure upgraded to full-width frosted Liquid Glass!)
             View controlContainer = root.findViewById(ID_CONTROL_CONTAINER);
             if (controlContainer != null) {
-                if (controlContainer.getBackground() != null) {
-                    controlContainer.setBackground(null);
+                Drawable curCtrlBg = controlContainer.getBackground();
+                if (curCtrlBg instanceof CouiTopHeaderGlassDrawable) {
+                    ((CouiTopHeaderGlassDrawable) curCtrlBg).updateState(isDark, glassHeaderActive);
+                } else {
+                    controlContainer.setBackground(new CouiTopHeaderGlassDrawable(activity, isDark, glassHeaderActive));
                 }
-                // Keep top frosted glass address bar floating over scrolling webpage content
-                // when Chromium translates it offscreen during scroll-down (contentOffset -> 0)
                 if (!inTabSwitcher && !isFullscreen) {
                     if (controlContainer.getTranslationY() < -0.5f) {
                         controlContainer.setTranslationY(0f);
@@ -469,22 +487,54 @@ public final class CouiBrowserUiEnhancer {
             if (locBarBg != null && locBarBg.getAlpha() != 0f) {
                 locBarBg.setAlpha(0f);
             }
+
+            // 2. Inner 44dp ColorOS 17 File Manager / Settings Liquid Glass Search Pill (ID_LOCATION_BAR)
             View locBar = root.findViewById(ID_LOCATION_BAR);
             if (locBar != null) {
-                View urlBar = root.findViewById(ID_URL_BAR);
-                boolean focused = (urlBar != null && urlBar.hasFocus());
+                ViewGroup.LayoutParams rawLp = locBar.getLayoutParams();
+                int targetH = dp(activity, 44);
+                int targetHPad = dp(activity, 14);
+                if (rawLp instanceof ViewGroup.MarginLayoutParams) {
+                    ViewGroup.MarginLayoutParams mlp = (ViewGroup.MarginLayoutParams) rawLp;
+                    int targetMarginH = dp(activity, 16);
+                    boolean lpChanged = false;
+                    if (mlp.height != targetH) {
+                        mlp.height = targetH;
+                        lpChanged = true;
+                    }
+                    if (mlp.leftMargin != targetMarginH) {
+                        mlp.leftMargin = targetMarginH;
+                        lpChanged = true;
+                    }
+                    if (mlp.rightMargin != targetMarginH) {
+                        mlp.rightMargin = targetMarginH;
+                        lpChanged = true;
+                    }
+                    if (mlp instanceof FrameLayout.LayoutParams) {
+                        FrameLayout.LayoutParams flp = (FrameLayout.LayoutParams) mlp;
+                        if ((flp.gravity & Gravity.VERTICAL_GRAVITY_MASK) != Gravity.CENTER_VERTICAL) {
+                            flp.gravity = Gravity.CENTER_VERTICAL;
+                            lpChanged = true;
+                        }
+                    }
+                    if (lpChanged) {
+                        locBar.setLayoutParams(mlp);
+                    }
+                }
+                if (locBar.getPaddingLeft() != targetHPad || locBar.getPaddingRight() != targetHPad) {
+                    locBar.setPadding(targetHPad, 0, targetHPad, 0);
+                }
+
                 Drawable curBg = locBar.getBackground();
-                CouiAddressBarGlassDrawable glassBg;
                 if (curBg instanceof CouiAddressBarGlassDrawable) {
-                    glassBg = (CouiAddressBarGlassDrawable) curBg;
-                    glassBg.updateState(isDark, realBlur && !focused);
+                    ((CouiAddressBarGlassDrawable) curBg).updateState(isDark, glassHeaderActive);
                 } else {
-                    glassBg = new CouiAddressBarGlassDrawable(activity, isDark, realBlur && !focused);
+                    CouiAddressBarGlassDrawable glassBg = new CouiAddressBarGlassDrawable(activity, isDark, glassHeaderActive);
                     locBar.setBackground(glassBg);
-                    locBar.setElevation(dpF(activity, 8f));
+                    locBar.setElevation(dpF(activity, 3f));
                     if (Build.VERSION.SDK_INT >= 28) {
-                        locBar.setOutlineSpotShadowColor(0x28000000);
-                        locBar.setOutlineAmbientShadowColor(0x16000000);
+                        locBar.setOutlineSpotShadowColor(0x1C000000);
+                        locBar.setOutlineAmbientShadowColor(0x0E000000);
                     }
                     locBar.setOutlineProvider(new ViewOutlineProvider() {
                         @Override
@@ -496,11 +546,148 @@ public final class CouiBrowserUiEnhancer {
                     });
                     locBar.setClipToOutline(false);
                 }
+
+                // 3. Replace Chromium's 2-slider status icon with exact ColorOS 17 search magnifying-glass icon
+                //    (1:1 file-manager-address.jpg & titanium-settings-address.jpg) while preserving click-to-site-info!
+                //    Force dead-center vertical alignment on both status container & url_bar inside the 44dp pill!
+                View statusIconV = locBar.findViewById(ID_LOCATION_BAR_STATUS_ICON);
+                if (statusIconV instanceof ImageView) {
+                    ImageView iv = (ImageView) statusIconV;
+                    Drawable curIc = iv.getDrawable();
+                    if (!(curIc instanceof CouiSearchGlassIconDrawable)) {
+                        iv.setImageDrawable(new CouiSearchGlassIconDrawable(activity, isDark));
+                        iv.setImageTintList(null);
+                        iv.setScaleType(ImageView.ScaleType.CENTER);
+                        iv.setVisibility(View.VISIBLE);
+                    } else {
+                        ((CouiSearchGlassIconDrawable) curIc).setDarkMode(isDark);
+                    }
+                    if (iv.getPaddingTop() != 0 || iv.getPaddingBottom() != 0) {
+                        iv.setPadding(iv.getPaddingLeft(), 0, iv.getPaddingRight(), 0);
+                    }
+                }
+                View statusContainer = locBar.findViewById(ID_LOCATION_BAR_STATUS);
+                if (statusContainer != null) {
+                    if (statusContainer.getVisibility() != View.VISIBLE) {
+                        statusContainer.setVisibility(View.VISIBLE);
+                    }
+                    if (statusContainer.getPaddingTop() != 0 || statusContainer.getPaddingBottom() != 0) {
+                        statusContainer.setPadding(statusContainer.getPaddingLeft(), 0, statusContainer.getPaddingRight(), 0);
+                    }
+                    ViewGroup.LayoutParams slp = statusContainer.getLayoutParams();
+                    if (slp instanceof FrameLayout.LayoutParams) {
+                        FrameLayout.LayoutParams fslp = (FrameLayout.LayoutParams) slp;
+                        if (fslp.height != ViewGroup.LayoutParams.MATCH_PARENT
+                                || (fslp.gravity & Gravity.VERTICAL_GRAVITY_MASK) != Gravity.CENTER_VERTICAL) {
+                            fslp.height = ViewGroup.LayoutParams.MATCH_PARENT;
+                            fslp.gravity = Gravity.START | Gravity.CENTER_VERTICAL;
+                            statusContainer.setLayoutParams(fslp);
+                        }
+                    } else if (slp instanceof LinearLayout.LayoutParams) {
+                        LinearLayout.LayoutParams lslp = (LinearLayout.LayoutParams) slp;
+                        if (lslp.gravity != Gravity.CENTER_VERTICAL || lslp.topMargin != 0 || lslp.bottomMargin != 0) {
+                            lslp.gravity = Gravity.CENTER_VERTICAL;
+                            lslp.topMargin = 0;
+                            lslp.bottomMargin = 0;
+                            statusContainer.setLayoutParams(lslp);
+                        }
+                    }
+                }
+                if (urlBar instanceof TextView) {
+                    TextView tv = (TextView) urlBar;
+                    int wantCol = isDark ? 0xF2FFFFFF : 0xFF191919;
+                    int wantHint = isDark ? 0x80FFFFFF : 0xFF7F7F7F;
+                    if (tv.getCurrentTextColor() != wantCol) tv.setTextColor(wantCol);
+                    if (tv.getCurrentHintTextColor() != wantHint) tv.setHintTextColor(wantHint);
+                    if ((tv.getGravity() & Gravity.VERTICAL_GRAVITY_MASK) != Gravity.CENTER_VERTICAL) {
+                        tv.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+                    }
+                    if (tv.getPaddingTop() != 0 || tv.getPaddingBottom() != 0) {
+                        tv.setPadding(tv.getPaddingLeft(), 0, Math.max(tv.getPaddingRight(), dp(activity, 6)), 0);
+                    }
+                    float wantSizePx = TypedValue.applyDimension(
+                            TypedValue.COMPLEX_UNIT_SP, 15.5f, activity.getResources().getDisplayMetrics());
+                    if (Math.abs(tv.getTextSize() - wantSizePx) > 0.5f) {
+                        tv.setTextSize(TypedValue.COMPLEX_UNIT_PX, wantSizePx);
+                    }
+                }
             }
         } catch (Throwable ignored) {}
     }
 
-    /** Custom ColorOS 17 Frosted Liquid Glass pill Drawable for the top address bar (ID_LOCATION_BAR). */
+    /**
+     * Full-width Frosted Liquid Glass backdrop for the top header bar (ID_CONTROL_CONTAINER),
+     * paired with SurfaceViewBlurController's full-bleed 10dp hardware blur layer (ZERO corner leaks!).
+     */
+    static final class CouiTopHeaderGlassDrawable extends Drawable {
+        private final Context ctx;
+        private boolean isDark;
+        private boolean realBlur;
+        private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint sheenPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint linePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private int cachedW = -1, cachedH = -1;
+        private boolean cachedDark = false;
+
+        CouiTopHeaderGlassDrawable(Context ctx, boolean isDark, boolean realBlur) {
+            this.ctx = ctx;
+            this.isDark = isDark;
+            this.realBlur = realBlur;
+        }
+
+        void updateState(boolean dark, boolean blur) {
+            if (this.isDark != dark || this.realBlur != blur) {
+                this.isDark = dark;
+                this.realBlur = blur;
+                invalidateSelf();
+            }
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            Rect b = getBounds();
+            int w = b.width();
+            int h = b.height();
+            if (w <= 0 || h <= 0) return;
+
+            // Match the calibrated bottom 3-piece Liquid Glass nav bar frost opacity
+            if (realBlur) {
+                fillPaint.setColor(isDark ? 0x7A18181C : 0x8AFFFFFF);
+            } else {
+                fillPaint.setColor(isDark ? 0xF2141416 : 0xF5F5F7FA);
+            }
+            canvas.drawRect(b, fillPaint);
+
+            if (w != cachedW || h != cachedH || isDark != cachedDark) {
+                cachedW = w;
+                cachedH = h;
+                cachedDark = isDark;
+                sheenPaint.setShader(new LinearGradient(
+                        0f, b.top, 0f, b.bottom,
+                        isDark
+                                ? new int[]{0x42141416, 0x1018181C, 0x06000000}
+                                : new int[]{0x60F5F7FA, 0x18FFFFFF, 0x08E8EEF6},
+                        new float[]{0f, 0.35f, 1f},
+                        Shader.TileMode.CLAMP
+                ));
+            }
+            canvas.drawRect(b, sheenPaint);
+
+            // Delicate bottom frosted glass divider hairline (0.5dp)
+            float stroke = Math.max(1f, dpF(ctx, 0.5f));
+            linePaint.setColor(isDark ? 0x18FFFFFF : 0x0E000000);
+            canvas.drawRect(b.left, b.bottom - stroke, b.right, b.bottom, linePaint);
+        }
+
+        @Override public void setAlpha(int alpha) {}
+        @Override public void setColorFilter(ColorFilter colorFilter) {}
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+    }
+
+    /**
+     * Exact 1:1 ColorOS 17 File Manager & Settings Search Pill Drawable (44dp full capsule)
+     * with Kyant0/AndroidLiquidGlass 45° specular rim lighting and cached shaders (zero per-frame allocs).
+     */
     static final class CouiAddressBarGlassDrawable extends Drawable {
         private final Context ctx;
         private boolean isDark;
@@ -509,6 +696,10 @@ public final class CouiBrowserUiEnhancer {
         private final Paint sheenPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF rf = new RectF();
+        private LinearGradient cachedSheen;
+        private LinearGradient cachedRim;
+        private int cachedW = -1, cachedH = -1;
+        private boolean cachedDark = false;
 
         CouiAddressBarGlassDrawable(Context ctx, boolean isDark, boolean realBlur) {
             this.ctx = ctx;
@@ -536,58 +727,104 @@ public final class CouiBrowserUiEnhancer {
             rf.set(b.left + inset, b.top + inset, b.right - inset, b.bottom - inset);
             float r = rf.height() * 0.5f;
 
-            // Luminous translucent frosted glass fill matching calibrated bottom Liquid Glass nav bar
+            // Crisp ColorOS 17 File Manager "screenshot" / Settings "Search settings" Liquid Glass pill tint
+            // (airy translucent light pill with gentle contrast inside the frosted header bar)
             if (realBlur) {
-                fillPaint.setColor(isDark ? 0x781E1E22 : 0x86FFFFFF);
+                fillPaint.setColor(isDark ? 0x8F28282E : 0xA8EDF0F5);
             } else {
-                fillPaint.setColor(isDark ? 0xDC222226 : 0xEBF7F9FC);
+                fillPaint.setColor(isDark ? 0xE626262A : 0xFFEAECEF);
             }
             canvas.drawRoundRect(rf, r, r, fillPaint);
 
-            // Subtle top-left-to-bottom specular sheen
-            LinearGradient sheen = new LinearGradient(
-                    rf.left, rf.top, rf.left + w * 0.45f, rf.bottom,
-                    isDark
-                            ? new int[]{0x26FFFFFF, 0x06FFFFFF, 0x10000000}
-                            : new int[]{0x48FFFFFF, 0x10FFFFFF, 0x12E4EBF4},
-                    new float[]{0f, 0.52f, 1f},
-                    Shader.TileMode.CLAMP
-            );
-            sheenPaint.setShader(sheen);
+            if (w != cachedW || h != cachedH || isDark != cachedDark) {
+                cachedW = w;
+                cachedH = h;
+                cachedDark = isDark;
+                // 45° directional Liquid Glass sheen inspired by Kyant0/AndroidLiquidGlass HighlightStyle.Default
+                cachedSheen = new LinearGradient(
+                        rf.left, rf.top, rf.left + w * 0.35f, rf.bottom,
+                        isDark
+                                ? new int[]{0x22FFFFFF, 0x05FFFFFF, 0x0C000000}
+                                : new int[]{0x66FFFFFF, 0x1AFFFFFF, 0x0CE2E7F0},
+                        new float[]{0f, 0.48f, 1f},
+                        Shader.TileMode.CLAMP
+                );
+                cachedRim = new LinearGradient(
+                        rf.left, rf.top, rf.right, rf.bottom,
+                        isDark
+                                ? new int[]{0x58FFFFFF, 0x18FFFFFF, 0x38FFFFFF}
+                                : new int[]{0xF0FFFFFF, 0x38C6D0DF, 0xCCFFFFFF},
+                        new float[]{0f, 0.5f, 1f},
+                        Shader.TileMode.CLAMP
+                );
+            }
+            sheenPaint.setShader(cachedSheen);
             canvas.drawRoundRect(rf, r, r, sheenPaint);
 
-            // Delicate outer hairline contour (reads cleanly against pure white webpages & dark photos)
+            // Delicate outer hairline contour
             rimPaint.setShader(null);
-            rimPaint.setStrokeWidth(dpF(ctx, 0.65f));
-            rimPaint.setColor(isDark ? 0x26FFFFFF : 0x1A000000);
+            rimPaint.setStrokeWidth(dpF(ctx, 0.55f));
+            rimPaint.setColor(isDark ? 0x22FFFFFF : 0x14000000);
             canvas.drawRoundRect(rf, r, r, rimPaint);
 
-            // Crisp bright inner Liquid Glass specular rim
-            float rimIn = dpF(ctx, 0.75f);
+            // Inner 45° Liquid Glass specular bevel
+            float rimIn = dpF(ctx, 0.7f);
             rf.inset(rimIn, rimIn);
-            LinearGradient rimGrad = new LinearGradient(
-                    rf.left, rf.top, rf.right, rf.bottom,
-                    isDark
-                            ? new int[]{0x6CFFFFFF, 0x1EFFFFFF, 0x44FFFFFF}
-                            : new int[]{0xFFFFFFFF, 0x40C6D0DF, 0xDCFFFFFF},
-                    new float[]{0f, 0.5f, 1f},
-                    Shader.TileMode.CLAMP
-            );
-            rimPaint.setStrokeWidth(dpF(ctx, 1.0f));
-            rimPaint.setShader(rimGrad);
+            rimPaint.setStrokeWidth(dpF(ctx, 0.9f));
+            rimPaint.setShader(cachedRim);
             canvas.drawRoundRect(rf, Math.max(0f, r - rimIn), Math.max(0f, r - rimIn), rimPaint);
         }
 
-        @Override
-        public void setAlpha(int alpha) {}
+        @Override public void setAlpha(int alpha) {}
+        @Override public void setColorFilter(ColorFilter colorFilter) {}
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+    }
 
-        @Override
-        public void setColorFilter(ColorFilter colorFilter) {}
+    /** Exact 1:1 ColorOS 17 File Manager / Settings search magnifying-glass vector icon (19dp, 1.85dp stroke). */
+    static final class CouiSearchGlassIconDrawable extends Drawable {
+        private final Context ctx;
+        private boolean isDark;
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final int sizePx;
 
-        @Override
-        public int getOpacity() {
-            return PixelFormat.TRANSLUCENT;
+        CouiSearchGlassIconDrawable(Context ctx, boolean isDark) {
+            this.ctx = ctx;
+            this.isDark = isDark;
+            this.sizePx = dp(ctx, 20f);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStrokeJoin(Paint.Join.ROUND);
+            paint.setStrokeWidth(dpF(ctx, 1.85f));
         }
+
+        void setDarkMode(boolean dark) {
+            if (this.isDark != dark) {
+                this.isDark = dark;
+                invalidateSelf();
+            }
+        }
+
+        @Override public int getIntrinsicWidth() { return sizePx; }
+        @Override public int getIntrinsicHeight() { return sizePx; }
+
+        @Override
+        public void draw(Canvas canvas) {
+            Rect b = getBounds();
+            float cx = b.exactCenterX();
+            float cy = b.exactCenterY();
+            float r = dpF(ctx, 6.2f);
+            float gx = cx - dpF(ctx, 1.3f);
+            float gy = cy - dpF(ctx, 1.3f);
+            paint.setColor(isDark ? 0x99FFFFFF : 0xFF6B6E75);
+            canvas.drawCircle(gx, gy, r, paint);
+            float hStart = r * 0.72f;
+            float hEnd = r * 1.32f;
+            canvas.drawLine(gx + hStart, gy + hStart, gx + hEnd, gy + hEnd, paint);
+        }
+
+        @Override public void setAlpha(int alpha) { paint.setAlpha(alpha); }
+        @Override public void setColorFilter(ColorFilter cf) { paint.setColorFilter(cf); }
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
     }
 
     // =========================================================================
@@ -1843,13 +2080,17 @@ public final class CouiBrowserUiEnhancer {
         private final Activity activity;
         private final View hostView;
         private final View[] slotViews = new View[SLOT_COUNT];
-        private final float[] slotCornerDp = new float[SLOT_COUNT]; // <= 0 means height * 0.5f (pill/circle)
+        // cornerDp: > 0f = fixed dp radius; == 0f = auto capsule/circle (height*0.5f); < 0f = 0px square full-bleed
+        private final float[] slotCornerDp = new float[SLOT_COUNT];
         private final int[] slotBlurDp = new int[SLOT_COUNT];
         private final WeakHashMap<SurfaceView, SlotLayer[]> surfaceLayers = new WeakHashMap<>();
         private final List<SurfaceView> scratchSurfaces = new ArrayList<>();
         private final int[] svLoc = new int[2];
         private final int[] vLoc = new int[2];
         private final Rect tmpCrop = new Rect();
+        private final float[] svScale = new float[2];
+        private final float[] vScale = new float[2];
+        private long lastTreeScanMs = 0L;
         private boolean failed = false;
         private boolean hasActiveBlur = false;
         private boolean loggedFirstActive = false;
@@ -1944,24 +2185,36 @@ public final class CouiBrowserUiEnhancer {
             android.view.AttachedSurfaceControl rootSc = hostView.getRootSurfaceControl();
             if (rootSc == null) return;
 
-            scratchSurfaces.clear();
-            collectSurfaceViews(w.getDecorView(), scratchSurfaces);
+            long nowMs = SystemClock.uptimeMillis();
+            boolean needScan = scratchSurfaces.isEmpty() || (nowMs - lastTreeScanMs >= 500L);
+            if (!needScan) {
+                for (int i = 0; i < scratchSurfaces.size(); i++) {
+                    SurfaceView sv = scratchSurfaces.get(i);
+                    if (!sv.isAttachedToWindow() || sv.getVisibility() != View.VISIBLE) {
+                        needScan = true;
+                        break;
+                    }
+                }
+            }
+            if (needScan) {
+                lastTreeScanMs = nowMs;
+                scratchSurfaces.clear();
+                collectSurfaceViews(w.getDecorView(), scratchSurfaces);
 
-            // Clean up stale SurfaceViews no longer in the tree
-            Iterator<Map.Entry<SurfaceView, SlotLayer[]>> it = surfaceLayers.entrySet().iterator();
-            while (it.hasNext()) {
-                Map.Entry<SurfaceView, SlotLayer[]> e = it.next();
-                if (!scratchSurfaces.contains(e.getKey())) {
-                    for (SlotLayer sl : e.getValue()) releaseSlotLayer(sl);
-                    it.remove();
+                // Clean up stale SurfaceViews no longer in the tree
+                Iterator<Map.Entry<SurfaceView, SlotLayer[]>> it = surfaceLayers.entrySet().iterator();
+                while (it.hasNext()) {
+                    Map.Entry<SurfaceView, SlotLayer[]> e = it.next();
+                    if (!scratchSurfaces.contains(e.getKey())) {
+                        for (SlotLayer sl : e.getValue()) releaseSlotLayer(sl);
+                        it.remove();
+                    }
                 }
             }
 
-            SurfaceControl.Transaction tx = new SurfaceControl.Transaction();
-            boolean dirty = false;
+            // Allocate SurfaceControl.Transaction LAZILY only when a layer actually changes (ZERO steady-scroll JNI allocs!)
+            SurfaceControl.Transaction tx = null;
             boolean anyActive = false;
-            float[] svScale = new float[2];
-            float[] vScale = new float[2];
 
             for (int si = 0; si < scratchSurfaces.size(); si++) {
                 SurfaceView sv = scratchSurfaces.get(si);
@@ -1975,9 +2228,9 @@ public final class CouiBrowserUiEnhancer {
                     if (arr != null) {
                         for (int slot = 0; slot < SLOT_COUNT; slot++) {
                             if (arr[slot] != null && arr[slot].visible) {
+                                if (tx == null) tx = new SurfaceControl.Transaction();
                                 tx.setVisibility(arr[slot].child, false);
                                 arr[slot].visible = false;
-                                dirty = true;
                             }
                         }
                     }
@@ -2001,9 +2254,9 @@ public final class CouiBrowserUiEnhancer {
                             && target.getWidth() > 0 && target.getHeight() > 0);
                     if (!targetVisible) {
                         if (sl != null && sl.visible) {
+                            if (tx == null) tx = new SurfaceControl.Transaction();
                             tx.setVisibility(sl.child, false);
                             sl.visible = false;
-                            dirty = true;
                         }
                         continue;
                     }
@@ -2021,9 +2274,9 @@ public final class CouiBrowserUiEnhancer {
                     boolean overlaps = tmpCrop.intersects(0, 0, sv.getWidth(), sv.getHeight());
                     if (!overlaps) {
                         if (sl != null && sl.visible) {
+                            if (tx == null) tx = new SurfaceControl.Transaction();
                             tx.setVisibility(sl.child, false);
                             sl.visible = false;
-                            dirty = true;
                         }
                         continue;
                     }
@@ -2034,15 +2287,21 @@ public final class CouiBrowserUiEnhancer {
                         arr[slot] = sl;
                     }
 
-                    float cornerPx = (slotCornerDp[slot] > 0f)
-                            ? dpF(activity, slotCornerDp[slot]) * Math.min(vScale[0], vScale[1])
-                            : Math.min(tw, th) * 0.5f;
+                    float cornerPx;
+                    if (slotCornerDp[slot] < 0f) {
+                        cornerPx = 0f; // Full-bleed edge-to-edge header strip (ZERO corner leaks!)
+                    } else if (slotCornerDp[slot] > 0f) {
+                        cornerPx = dpF(activity, slotCornerDp[slot]) * Math.min(vScale[0], vScale[1]);
+                    } else {
+                        cornerPx = Math.min(tw, th) * 0.5f;
+                    }
                     float scaledCorner = cornerPx / svScale[1];
                     int blurPx = dp(activity, slotBlurDp[slot] > 0 ? slotBlurDp[slot] : 22);
 
                     if (!sl.visible || !tmpCrop.equals(sl.crop)
                             || Math.abs(scaledCorner - sl.cornerRadius) > 0.5f
                             || blurPx != sl.blurRadius) {
+                        if (tx == null) tx = new SurfaceControl.Transaction();
                         tx.setCrop(sl.child, tmpCrop);
                         tx.setLayer(sl.child, 2 + slot);
                         M_SET_CORNER_RADIUS.invoke(tx, sl.child, scaledCorner);
@@ -2052,16 +2311,13 @@ public final class CouiBrowserUiEnhancer {
                         sl.cornerRadius = scaledCorner;
                         sl.blurRadius = blurPx;
                         sl.visible = true;
-                        dirty = true;
                     }
                     anyActive = true;
                 }
             }
 
-            if (dirty) {
+            if (tx != null) {
                 rootSc.applyTransactionOnDraw(tx);
-            } else {
-                tx.close();
             }
 
             boolean prevActive = hasActiveBlur;
@@ -2136,17 +2392,33 @@ public final class CouiBrowserUiEnhancer {
         private boolean hiddenByIme = false;
         private int currentBottomPadPx;
 
+        private View cachedControlContainer;
+        private long lastToolbarSyncMs = 0L;
+
         private final ViewTreeObserver.OnPreDrawListener preDrawListener = new ViewTreeObserver.OnPreDrawListener() {
             @Override
             public boolean onPreDraw() {
-                if (activity.getWindow() != null) {
-                    View decor = activity.getWindow().getDecorView();
-                    hideTopToolbarButtons(decor);
-                    View locBar = decor.findViewById(ID_LOCATION_BAR);
-                    if (locBar != null) {
-                        blurController.setSlot(SurfaceViewBlurController.SLOT_ADDRESS_BAR, locBar, 0f, 11);
+                Window w = activity.getWindow();
+                if (w != null) {
+                    View decor = w.getDecorView();
+                    long now = SystemClock.uptimeMillis();
+                    // Throttle view-tree styling walks to <= 12Hz while keeping pin-at-y=0 & SurfaceControl instant!
+                    if (cachedControlContainer == null || !cachedControlContainer.isAttachedToWindow()) {
+                        cachedControlContainer = decor.findViewById(ID_CONTROL_CONTAINER);
+                        if (cachedControlContainer != null) {
+                            // Full-bleed edge-to-edge frosted Liquid Glass header (cornerDp = -1f -> 0px square, 10dp blur)
+                            blurController.setSlot(SurfaceViewBlurController.SLOT_ADDRESS_BAR, cachedControlContainer, -1f, 10);
+                        }
                     }
-                    styleTopAddressBarGlass(activity, decor, isDark, blurController.isBlurActive());
+                    if (cachedControlContainer != null && cachedControlContainer.getTranslationY() < -0.5f) {
+                        // Instant pin during scroll without walking the whole decor tree!
+                        styleTopAddressBarGlass(activity, decor, isDark, blurController.isBlurActive());
+                        lastToolbarSyncMs = now;
+                    } else if (now - lastToolbarSyncMs >= 80L) {
+                        lastToolbarSyncMs = now;
+                        hideTopToolbarButtons(decor);
+                        styleTopAddressBarGlass(activity, decor, isDark, blurController.isBlurActive());
+                    }
                 }
                 blurController.update();
                 return true;
@@ -2372,6 +2644,10 @@ public final class CouiBrowserUiEnhancer {
             private float touchY = -1f;
             private float spotlightAlpha = 0f;
             private boolean longPressFired = false;
+            private LinearGradient cachedSheen;
+            private LinearGradient cachedRim;
+            private int cachedW = -1, cachedH = -1;
+            private boolean cachedDark = false;
             private final Runnable longPressRunnable = new Runnable() {
                 @Override
                 public void run() {
@@ -2430,15 +2706,28 @@ public final class CouiBrowserUiEnhancer {
                 }
                 canvas.drawRoundRect(circleRect, radius, radius, surfacePaint);
 
-                LinearGradient sheen = new LinearGradient(
-                        0, 0, w * 0.6f, h,
-                        isDark
-                                ? new int[]{0x26FFFFFF, 0x06FFFFFF, 0x10000000}
-                                : new int[]{0x48FFFFFF, 0x10FFFFFF, 0x10E4EAF3},
-                        new float[]{0f, 0.52f, 1f},
-                        Shader.TileMode.CLAMP
-                );
-                sheenPaint.setShader(sheen);
+                if (w != cachedW || h != cachedH || isDark != cachedDark) {
+                    cachedW = w;
+                    cachedH = h;
+                    cachedDark = isDark;
+                    cachedSheen = new LinearGradient(
+                            0, 0, w * 0.6f, h,
+                            isDark
+                                    ? new int[]{0x26FFFFFF, 0x06FFFFFF, 0x10000000}
+                                    : new int[]{0x48FFFFFF, 0x10FFFFFF, 0x10E4EAF3},
+                            new float[]{0f, 0.52f, 1f},
+                            Shader.TileMode.CLAMP
+                    );
+                    cachedRim = new LinearGradient(
+                            0, 0, w, h,
+                            isDark
+                                    ? new int[]{0x76FFFFFF, 0x1EFFFFFF, 0x4CFFFFFF}
+                                    : new int[]{0xFFFFFFFF, 0x3EC6D0DE, 0xE6FFFFFF},
+                            new float[]{0f, 0.5f, 1f},
+                            Shader.TileMode.CLAMP
+                    );
+                }
+                sheenPaint.setShader(cachedSheen);
                 canvas.drawRoundRect(circleRect, radius, radius, sheenPaint);
 
                 // 2. Touch spotlight
@@ -2462,16 +2751,8 @@ public final class CouiBrowserUiEnhancer {
                 canvas.drawRoundRect(circleRect, radius, radius, borderPaint);
 
                 circleRect.inset(dpF(getContext(), 0.8f), dpF(getContext(), 0.8f));
-                LinearGradient rimGrad = new LinearGradient(
-                        0, 0, w, h,
-                        isDark
-                                ? new int[]{0x76FFFFFF, 0x1EFFFFFF, 0x4CFFFFFF}
-                                : new int[]{0xFFFFFFFF, 0x3EC6D0DE, 0xE6FFFFFF},
-                        new float[]{0f, 0.5f, 1f},
-                        Shader.TileMode.CLAMP
-                );
                 borderPaint.setStrokeWidth(dpF(getContext(), 1.05f));
-                borderPaint.setShader(rimGrad);
+                borderPaint.setShader(cachedRim);
                 canvas.drawRoundRect(circleRect, radius - dpF(getContext(), 0.8f), radius - dpF(getContext(), 0.8f), borderPaint);
 
                 // 4. 1:1 ColorOS 17 Bold Vector Icons (23.5dp Back / 22.5dp Menu, 2.15dp stroke)
@@ -2559,6 +2840,10 @@ public final class CouiBrowserUiEnhancer {
             private float downX = 0f;
             private final int touchSlop;
             private ValueAnimator dropletAnimator;
+            private LinearGradient cachedSheen;
+            private LinearGradient cachedRim;
+            private int cachedW = -1, cachedH = -1;
+            private boolean cachedDark = false;
 
             CenterCapsuleView(Context ctx) {
                 super(ctx);
@@ -2652,15 +2937,28 @@ public final class CouiBrowserUiEnhancer {
                 }
                 canvas.drawRoundRect(capsuleRect, radius, radius, surfacePaint);
 
-                LinearGradient sheen = new LinearGradient(
-                        0, 0, w * 0.45f, h,
-                        isDark
-                                ? new int[]{0x26FFFFFF, 0x06FFFFFF, 0x10000000}
-                                : new int[]{0x48FFFFFF, 0x10FFFFFF, 0x10E4EAF3},
-                        new float[]{0f, 0.52f, 1f},
-                        Shader.TileMode.CLAMP
-                );
-                sheenPaint.setShader(sheen);
+                if (w != cachedW || h != cachedH || isDark != cachedDark) {
+                    cachedW = w;
+                    cachedH = h;
+                    cachedDark = isDark;
+                    cachedSheen = new LinearGradient(
+                            0, 0, w * 0.45f, h,
+                            isDark
+                                    ? new int[]{0x26FFFFFF, 0x06FFFFFF, 0x10000000}
+                                    : new int[]{0x48FFFFFF, 0x10FFFFFF, 0x10E4EAF3},
+                            new float[]{0f, 0.52f, 1f},
+                            Shader.TileMode.CLAMP
+                    );
+                    cachedRim = new LinearGradient(
+                            0, 0, w, h,
+                            isDark
+                                    ? new int[]{0x76FFFFFF, 0x1EFFFFFF, 0x4CFFFFFF}
+                                    : new int[]{0xFFFFFFFF, 0x3EC6D0DE, 0xE6FFFFFF},
+                            new float[]{0f, 0.5f, 1f},
+                            Shader.TileMode.CLAMP
+                    );
+                }
+                sheenPaint.setShader(cachedSheen);
                 canvas.drawRoundRect(capsuleRect, radius, radius, sheenPaint);
 
                 // 2. Touch spotlight under finger
@@ -2684,16 +2982,8 @@ public final class CouiBrowserUiEnhancer {
                 canvas.drawRoundRect(capsuleRect, radius, radius, borderPaint);
 
                 capsuleRect.inset(dpF(getContext(), 0.8f), dpF(getContext(), 0.8f));
-                LinearGradient rimGrad = new LinearGradient(
-                        0, 0, w, h,
-                        isDark
-                                ? new int[]{0x76FFFFFF, 0x1EFFFFFF, 0x4CFFFFFF}
-                                : new int[]{0xFFFFFFFF, 0x3EC6D0DE, 0xE6FFFFFF},
-                        new float[]{0f, 0.5f, 1f},
-                        Shader.TileMode.CLAMP
-                );
                 borderPaint.setStrokeWidth(dpF(getContext(), 1.05f));
-                borderPaint.setShader(rimGrad);
+                borderPaint.setShader(cachedRim);
                 canvas.drawRoundRect(capsuleRect, radius - dpF(getContext(), 0.8f), radius - dpF(getContext(), 0.8f), borderPaint);
 
                 // 4. Transient Liquid Glass press/drag pill highlight ONLY during active touch (0 alpha at rest!)
