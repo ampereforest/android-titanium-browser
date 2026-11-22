@@ -16,6 +16,7 @@ import android.graphics.ColorFilter;
 import android.graphics.LinearGradient;
 import android.graphics.Outline;
 import android.graphics.Paint;
+import android.graphics.BlurMaskFilter;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.PorterDuff;
@@ -287,6 +288,91 @@ public final class CouiBrowserUiEnhancer {
         canvas.drawPath(p, paint);
     }
 
+    // =========================================================================
+    // Round 11: Edge-to-edge status bar frosted blur for the tabbed browser
+    // =========================================================================
+
+    /** Last status bar top inset (px) dropped from EdgeToEdgeBaseLayout for ChromeTabbedActivity. */
+    private static volatile int sTopInsetPx = 0;
+    private static volatile Class<?> sTabbedActivityClass;
+    private static final String TABBED_ACTIVITY_CLASS = "org.chromium.chrome.browser.ChromeTabbedActivity";
+
+    static boolean isTabbedBrowser(Context ctx) {
+        Activity a = unwrapActivity(ctx);
+        if (a == null) return false;
+        Class<?> ac = a.getClass();
+        if (ac == sTabbedActivityClass) return true;
+        for (Class<?> c = ac; c != null && c != Activity.class; c = c.getSuperclass()) {
+            if (TABBED_ACTIVITY_CLASS.equals(c.getName())) {
+                sTabbedActivityClass = ac;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int systemStatusBarHeight(Context ctx) {
+        try {
+            int id = ctx.getResources().getIdentifier("status_bar_height", "dimen", "android");
+            return id != 0 ? ctx.getResources().getDimensionPixelSize(id) : 0;
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    /**
+     * Smali hook (Lo05.c, Chromium's edge-to-edge insets listener) replacing
+     * EdgeToEdgeBaseLayout.setPadding(l, t, r, b). For ChromeTabbedActivity the top (status bar) inset is
+     * dropped so the compositor SurfaceView + control_container start at y = 0 and web content can scroll
+     * (and be hardware-blurred) behind the transparent status bar. The inset is re-applied as top padding
+     * on toolbar_container, and added to the top controls height by {@link #extraTopControlsHeight}.
+     */
+    public static void onEdgeToEdgePadding(View base, int l, int t, int r, int b) {
+        int top = t;
+        try {
+            if (t > 0 && base != null && isTabbedBrowser(base.getContext())) {
+                if (sTopInsetPx != t) {
+                    int sys = systemStatusBarHeight(base.getContext());
+                    Log.i(TAG, "edge-to-edge top inset " + sTopInsetPx + " -> " + t + " (system dimen " + sys + ")");
+                    sTopInsetPx = t;
+                }
+                top = 0;
+                View tc = base.findViewById(ID_TOOLBAR_CONTAINER);
+                if (tc != null && tc.getPaddingTop() != t) {
+                    tc.setPadding(tc.getPaddingLeft(), t, tc.getPaddingRight(), tc.getPaddingBottom());
+                }
+            }
+        } catch (Throwable ignored) {}
+        if (base != null) base.setPadding(l, top, r, b);
+    }
+
+    /** Smali hook added to ToolbarControlContainer.k() (top controls height). */
+    public static int extraTopControlsHeight(View controlContainer) {
+        try {
+            if (controlContainer == null || !isTabbedBrowser(controlContainer.getContext())) return 0;
+            int t = sTopInsetPx;
+            if (t <= 0) t = systemStatusBarHeight(controlContainer.getContext());
+            return Math.max(0, t);
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    /** Makes EdgeToEdgeBaseLayout's status bar paint (field C) transparent for the tabbed browser. */
+    private static void clearEdgeToEdgeStatusBarPaint(Activity activity) {
+        try {
+            View e2e = activity.findViewById(ID_EDGE_TO_EDGE_BASE);
+            if (e2e == null) return;
+            Field f = e2e.getClass().getDeclaredField("C");
+            f.setAccessible(true);
+            Object p = f.get(e2e);
+            if (p instanceof Paint && ((Paint) p).getColor() != Color.TRANSPARENT) {
+                ((Paint) p).setColor(Color.TRANSPARENT);
+                e2e.invalidate();
+            }
+        } catch (Throwable ignored) {}
+    }
+
     /** Hooked into ChromeTabbedActivity.onResume(). */
     public static void attachToBrowser(final Activity activity) {
         if (activity == null) return;
@@ -295,7 +381,13 @@ public final class CouiBrowserUiEnhancer {
             if (w != null) {
                 boolean dark = isDarkMode(activity);
                 w.setNavigationBarColor(Color.TRANSPARENT);
-                w.setStatusBarColor(dark ? 0xFF141416 : 0xFFF5F7FA);
+                // Round 11: fully transparent status bar — the frosted glass header + SurfaceControl blur
+                // now extend edge-to-edge from y = 0 (see onEdgeToEdgePadding / extraTopControlsHeight).
+                w.setStatusBarColor(Color.TRANSPARENT);
+                if (Build.VERSION.SDK_INT >= 29) {
+                    w.setStatusBarContrastEnforced(false);
+                }
+                clearEdgeToEdgeStatusBarPaint(activity);
                 if (Build.VERSION.SDK_INT >= 30) {
                     WindowInsetsController wic = w.getInsetsController();
                     if (wic != null) {
@@ -356,27 +448,106 @@ public final class CouiBrowserUiEnhancer {
         for (int id : ids) {
             View v = root.findViewById(id);
             if (v != null) {
+                // Round 11: scale 0.001 (not 0) keeps the view matrix INVERTIBLE, so touch hit-testing honours
+                // the -400dp translation; with scale 0 Android fell back to the layout bounds and the invisible
+                // Home / tab-stack / menu buttons could still swallow taps on the ends of the search pill.
                 if (v.getAlpha() != 0f) v.setAlpha(0f);
-                if (v.getScaleX() != 0f) v.setScaleX(0f);
-                if (v.getScaleY() != 0f) v.setScaleY(0f);
+                if (v.getScaleX() != 0.001f) v.setScaleX(0.001f);
+                if (v.getScaleY() != 0.001f) v.setScaleY(0.001f);
                 if (v.getTranslationY() != offY) v.setTranslationY(offY);
             }
         }
         // Hide top toolbar hairlines so the frosted glass address bar floats cleanly
+        // Round 11: pin hairlines at alpha 0 (Chromium re-shows them; toggling GONE forced relayouts at 12Hz)
+        // (Chromium re-animates their alpha, so scaleY = 0 is what actually keeps them from drawing.)
         View hairline = root.findViewById(ID_TOOLBAR_HAIRLINE);
-        if (hairline != null && hairline.getVisibility() != View.GONE) {
-            hairline.setAlpha(0f);
-            hairline.setVisibility(View.GONE);
+        if (hairline != null) {
+            if (hairline.getScaleY() != 0f) hairline.setScaleY(0f);
+            if (hairline.getAlpha() != 0f) hairline.setAlpha(0f);
         }
         View botHairline = root.findViewById(ID_TOOLBAR_BOTTOM_HAIRLINE);
-        if (botHairline != null && botHairline.getVisibility() != View.GONE) {
-            botHairline.setAlpha(0f);
-            botHairline.setVisibility(View.GONE);
+        if (botHairline != null) {
+            if (botHairline.getScaleY() != 0f) botHairline.setScaleY(0f);
+            if (botHairline.getAlpha() != 0f) botHairline.setAlpha(0f);
         }
         // Collapse any bottom chin scrim if present so the 3-piece bar floats over web content
         View bottomContainer = root.findViewById(0x7f0101f6); // id/bottom_container
         if (bottomContainer != null) {
             bottomContainer.setBackground(null);
+        }
+    }
+
+    private static final String HEADER_GLASS_TAG = "coui_header_glass";
+
+    /** Non-interactive full-bleed view hosting the header glass drawable inside control_container. */
+    static final class CouiHeaderGlassView extends View {
+        final CouiTopHeaderGlassDrawable glass;
+
+        CouiHeaderGlassView(Context ctx, CouiTopHeaderGlassDrawable glass) {
+            super(ctx);
+            this.glass = glass;
+            setTag(HEADER_GLASS_TAG);
+            setBackground(glass);
+            setClickable(false);
+            setFocusable(false);
+            setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        }
+
+        /**
+         * Never influences control_container's wrap_content height: report 0 on the AT_MOST/UNSPECIFIED pass,
+         * take the exact size in FrameLayout's match_parent re-measure pass (parent height already final).
+         */
+        @Override
+        protected void onMeasure(int widthSpec, int heightSpec) {
+            int w = MeasureSpec.getSize(widthSpec);
+            int h = MeasureSpec.getMode(heightSpec) == MeasureSpec.EXACTLY ? MeasureSpec.getSize(heightSpec) : 0;
+            setMeasuredDimension(w, h);
+        }
+    }
+
+    static CouiTopHeaderGlassDrawable ensureHeaderGlassView(Activity activity, View controlContainer,
+            boolean isDark, boolean glassActive) {
+        if (!(controlContainer instanceof ViewGroup)) return null;
+        ViewGroup cc = (ViewGroup) controlContainer;
+        View first = cc.findViewWithTag(HEADER_GLASS_TAG);
+        if (first instanceof CouiHeaderGlassView && first.getParent() == cc) {
+            CouiTopHeaderGlassDrawable g = ((CouiHeaderGlassView) first).glass;
+            g.updateState(isDark, glassActive);
+            if (first.getHeight() != cc.getHeight() && !first.isLayoutRequested()) {
+                first.requestLayout(); // parent re-sized without a match_parent re-measure pass
+            }
+            return g;
+        }
+        if (first != null && first.getParent() instanceof ViewGroup) ((ViewGroup) first.getParent()).removeView(first);
+        CouiTopHeaderGlassDrawable g = new CouiTopHeaderGlassDrawable(activity, isDark, glassActive);
+        // Appended LAST (Chromium addresses control_container children by index, e.g. getChildAt(0) ==
+        // toolbar_container) and pushed BEHIND its siblings with translationZ = -1 (FrameLayout draws and
+        // dispatches touches in Z order; this view is not clickable either way).
+        CouiHeaderGlassView gv = new CouiHeaderGlassView(activity, g);
+        gv.setTranslationZ(-1f);
+        cc.addView(gv, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        return g;
+    }
+
+    private static long sLastPillAuditMs = 0L;
+
+    /**
+     * Clears every non-ripple background (ColorDrawable / GradientDrawable / any opaque fill) on all
+     * descendants of the location bar pill so the glass capsule is uniformly translucent behind both
+     * the icon and the URL text. RippleDrawables are kept (transparent at rest, needed for press feedback).
+     */
+    static void stripOpaqueChildBackgrounds(ViewGroup group) {
+        for (int i = 0; i < group.getChildCount(); i++) {
+            View c = group.getChildAt(i);
+            Drawable bg = c.getBackground();
+            if (bg != null && !(bg instanceof android.graphics.drawable.RippleDrawable)
+                    && !(bg instanceof CouiAddressBarGlassDrawable)) {
+                c.setBackground(null);
+            }
+            if (c instanceof ViewGroup) {
+                stripOpaqueChildBackgrounds((ViewGroup) c);
+            }
         }
     }
 
@@ -415,12 +586,14 @@ public final class CouiBrowserUiEnhancer {
             // 1. Full-width Frosted Liquid Glass Top Header Backdrop on ID_CONTROL_CONTAINER
             //    (matches titanium-address-bar.jpg structure upgraded to full-width frosted Liquid Glass!)
             View controlContainer = root.findViewById(ID_CONTROL_CONTAINER);
+            CouiTopHeaderGlassDrawable headerGlass = null;
             if (controlContainer != null) {
-                Drawable curCtrlBg = controlContainer.getBackground();
-                if (curCtrlBg instanceof CouiTopHeaderGlassDrawable) {
-                    ((CouiTopHeaderGlassDrawable) curCtrlBg).updateState(isDark, glassHeaderActive);
-                } else {
-                    controlContainer.setBackground(new CouiTopHeaderGlassDrawable(activity, isDark, glassHeaderActive));
+                // Round 11: the glass lives in a dedicated child view at index 0 (behind toolbar_container).
+                // Chromium repeatedly resets control_container's own background (setBackground(null) / its
+                // LayerDrawable), which made the Round 10 header tint flicker and forced 12Hz re-installs.
+                headerGlass = ensureHeaderGlassView(activity, controlContainer, isDark, glassHeaderActive);
+                if (controlContainer.getBackground() != null) {
+                    controlContainer.setBackground(null);
                 }
                 if (!inTabSwitcher && !isFullscreen) {
                     if (controlContainer.getTranslationY() < -0.5f) {
@@ -435,6 +608,13 @@ public final class CouiBrowserUiEnhancer {
             if (toolbarContainer != null) {
                 if (toolbarContainer.getBackground() != null) {
                     toolbarContainer.setBackground(null);
+                }
+                // Round 11: toolbar_container carries the status bar inset as top padding (the compositor's
+                // toolbar texture is captured from this view, so it stays pixel-aligned with the live view).
+                int wantTop = extraTopControlsHeight(controlContainer != null ? controlContainer : toolbarContainer);
+                if (toolbarContainer.getPaddingTop() != wantTop) {
+                    toolbarContainer.setPadding(toolbarContainer.getPaddingLeft(), wantTop,
+                            toolbarContainer.getPaddingRight(), toolbarContainer.getPaddingBottom());
                 }
                 if (!inTabSwitcher && !isFullscreen && toolbarContainer.getTranslationY() < -0.5f) {
                     toolbarContainer.setTranslationY(0f);
@@ -488,12 +668,14 @@ public final class CouiBrowserUiEnhancer {
                 locBarBg.setAlpha(0f);
             }
 
-            // 2. Inner 44dp ColorOS 17 File Manager / Settings Liquid Glass Search Pill (ID_LOCATION_BAR)
+            // 2. Inner 40dp ColorOS 17 Settings Liquid Glass Search Pill (ID_LOCATION_BAR) — 1:1 with
+            //    settings-search-example.jpg: 40dp capsule whose top sits 4.3dp below the status bar.
             View locBar = root.findViewById(ID_LOCATION_BAR);
             if (locBar != null) {
                 ViewGroup.LayoutParams rawLp = locBar.getLayoutParams();
-                int targetH = dp(activity, 44);
+                int targetH = dp(activity, 40);
                 int targetHPad = dp(activity, 14);
+                int targetTop = Math.round(dpF(activity, 4.3f));
                 if (rawLp instanceof ViewGroup.MarginLayoutParams) {
                     ViewGroup.MarginLayoutParams mlp = (ViewGroup.MarginLayoutParams) rawLp;
                     int targetMarginH = dp(activity, 16);
@@ -510,10 +692,15 @@ public final class CouiBrowserUiEnhancer {
                         mlp.rightMargin = targetMarginH;
                         lpChanged = true;
                     }
+                    if (mlp.topMargin != targetTop || mlp.bottomMargin != 0) {
+                        mlp.topMargin = targetTop;
+                        mlp.bottomMargin = 0;
+                        lpChanged = true;
+                    }
                     if (mlp instanceof FrameLayout.LayoutParams) {
                         FrameLayout.LayoutParams flp = (FrameLayout.LayoutParams) mlp;
-                        if ((flp.gravity & Gravity.VERTICAL_GRAVITY_MASK) != Gravity.CENTER_VERTICAL) {
-                            flp.gravity = Gravity.CENTER_VERTICAL;
+                        if ((flp.gravity & Gravity.VERTICAL_GRAVITY_MASK) != Gravity.TOP) {
+                            flp.gravity = (flp.gravity & ~Gravity.VERTICAL_GRAVITY_MASK) | Gravity.TOP;
                             lpChanged = true;
                         }
                     }
@@ -521,8 +708,11 @@ public final class CouiBrowserUiEnhancer {
                         locBar.setLayoutParams(mlp);
                     }
                 }
-                if (locBar.getPaddingLeft() != targetHPad || locBar.getPaddingRight() != targetHPad) {
-                    locBar.setPadding(targetHPad, 0, targetHPad, 0);
+                // Start padding 5.5dp puts the lens center at x=122 like settings-search-example.jpg
+                int targetStartPad = Math.round(dpF(activity, 5.5f));
+                if (locBar.getPaddingLeft() != targetStartPad || locBar.getPaddingRight() != targetHPad
+                        || locBar.getPaddingTop() != 0 || locBar.getPaddingBottom() != 0) {
+                    locBar.setPadding(targetStartPad, 0, targetHPad, 0);
                 }
 
                 Drawable curBg = locBar.getBackground();
@@ -531,20 +721,61 @@ public final class CouiBrowserUiEnhancer {
                 } else {
                     CouiAddressBarGlassDrawable glassBg = new CouiAddressBarGlassDrawable(activity, isDark, glassHeaderActive);
                     locBar.setBackground(glassBg);
-                    locBar.setElevation(dpF(activity, 3f));
-                    if (Build.VERSION.SDK_INT >= 28) {
-                        locBar.setOutlineSpotShadowColor(0x1C000000);
-                        locBar.setOutlineAmbientShadowColor(0x0E000000);
-                    }
-                    locBar.setOutlineProvider(new ViewOutlineProvider() {
-                        @Override
-                        public void getOutline(View view, Outline outline) {
-                            float r = view.getHeight() * 0.5f;
-                            outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), r);
-                            outline.setAlpha(1.0f);
-                        }
-                    });
+                    // Round 11: no RenderNode elevation shadow (it darkens the translucent glass from below).
+                    // The soft ambient shadow is drawn OUTSIDE the capsule by CouiTopHeaderGlassDrawable.
+                    locBar.setElevation(0f);
+                    locBar.setOutlineProvider(null);
                     locBar.setClipToOutline(false);
+                }
+                long nowAudit = SystemClock.uptimeMillis();
+                if (nowAudit - sLastPillAuditMs >= 1000L && locBar instanceof ViewGroup) {
+                    sLastPillAuditMs = nowAudit;
+                    stripOpaqueChildBackgrounds((ViewGroup) locBar);
+                }
+                // Feed the pill rect (in control_container coordinates) to the header for its drop shadow.
+                if (controlContainer != null && headerGlass != null && locBar.getWidth() > 0) {
+                    int px = 0, py = 0;
+                    View cur = locBar;
+                    while (cur != null && cur != controlContainer) {
+                        px += cur.getLeft();
+                        py += cur.getTop();
+                        ViewParent pp = cur.getParent();
+                        cur = (pp instanceof View) ? (View) pp : null;
+                    }
+                    if (cur == controlContainer) {
+                        headerGlass.setPillRect(
+                                px, py, px + locBar.getWidth(), py + locBar.getHeight(), locBar.getVisibility() == View.VISIBLE);
+                    }
+                }
+                // NTP: Chromium fades the location bar CONTENTS out while the page's own search box is on screen.
+                // Mirror that effective alpha on the capsule + shadow so no empty glass pill floats at the top.
+                float contentAlpha = 1f;
+                if (urlBar != null) {
+                    if (urlBar.getVisibility() != View.VISIBLE) {
+                        contentAlpha = 0f;
+                    } else {
+                        for (View c = urlBar; c != null && c != locBar; ) {
+                            contentAlpha *= c.getAlpha();
+                            if (c.getVisibility() != View.VISIBLE) contentAlpha = 0f;
+                            ViewParent pp = c.getParent();
+                            c = (pp instanceof View) ? (View) pp : null;
+                        }
+                    }
+                }
+                if (locBar.getBackground() instanceof CouiAddressBarGlassDrawable) {
+                    ((CouiAddressBarGlassDrawable) locBar.getBackground()).setContentAlpha(contentAlpha);
+                }
+                if (headerGlass != null) {
+                    // The shadow belongs to the capsule as rendered: include locBar's own alpha and its ancestors'
+                    // (Chromium sets location_bar alpha 0 on the NTP while the page's fake search box is showing).
+                    float pillA = contentAlpha;
+                    for (View c = locBar; c != null && c != controlContainer; ) {
+                        pillA *= c.getAlpha();
+                        if (c.getVisibility() != View.VISIBLE) pillA = 0f;
+                        ViewParent pp = c.getParent();
+                        c = (pp instanceof View) ? (View) pp : null;
+                    }
+                    headerGlass.setPillAlpha(pillA);
                 }
 
                 // 3. Replace Chromium's 2-slider status icon with exact ColorOS 17 search magnifying-glass icon
@@ -564,6 +795,61 @@ public final class CouiBrowserUiEnhancer {
                     }
                     if (iv.getPaddingTop() != 0 || iv.getPaddingBottom() != 0) {
                         iv.setPadding(iv.getPaddingLeft(), 0, iv.getPaddingRight(), 0);
+                    }
+                    if (iv.getTranslationY() != 0f) iv.setTranslationY(0f);
+                    // Round 11: the icon used to sit at the BOTTOM of its 44dp row (y 206..284 vs pill center
+                    // 225). Center it in its parent LinearLayout (location_bar_status_icon_view) exactly.
+                    ViewGroup.LayoutParams ilp = iv.getLayoutParams();
+                    if (ilp instanceof LinearLayout.LayoutParams) {
+                        LinearLayout.LayoutParams l = (LinearLayout.LayoutParams) ilp;
+                        if (l.gravity != Gravity.CENTER_VERTICAL || l.topMargin != 0 || l.bottomMargin != 0) {
+                            l.gravity = Gravity.CENTER_VERTICAL;
+                            l.topMargin = 0;
+                            l.bottomMargin = 0;
+                            iv.setLayoutParams(l);
+                        }
+                    } else if (ilp instanceof FrameLayout.LayoutParams) {
+                        FrameLayout.LayoutParams l = (FrameLayout.LayoutParams) ilp;
+                        if ((l.gravity & Gravity.VERTICAL_GRAVITY_MASK) != Gravity.CENTER_VERTICAL
+                                || l.topMargin != 0 || l.bottomMargin != 0) {
+                            l.gravity = (l.gravity & ~Gravity.VERTICAL_GRAVITY_MASK) | Gravity.CENTER_VERTICAL;
+                            l.topMargin = 0;
+                            l.bottomMargin = 0;
+                            iv.setLayoutParams(l);
+                        }
+                    }
+                    ViewParent ivp = iv.getParent();
+                    if (ivp instanceof LinearLayout) {
+                        LinearLayout ll = (LinearLayout) ivp;
+                        // StatusIconView (location_bar_status_icon_view) keeps Chromium's fixed 56dp height
+                        // (182px) inside our 40dp pill, which pushed the centered icon 26px low. Make it
+                        // fill the pill height so the icon is optically dead-center with the URL text.
+                        ViewGroup.LayoutParams plp = ll.getLayoutParams();
+                        if (plp != null && plp.height != ViewGroup.LayoutParams.MATCH_PARENT) {
+                            plp.height = ViewGroup.LayoutParams.MATCH_PARENT;
+                            if (plp instanceof LinearLayout.LayoutParams) {
+                                ((LinearLayout.LayoutParams) plp).gravity = Gravity.CENTER_VERTICAL;
+                            }
+                            ll.setLayoutParams(plp);
+                        }
+                        if ((ll.getGravity() & Gravity.VERTICAL_GRAVITY_MASK) != Gravity.CENTER_VERTICAL) {
+                            ll.setGravity((ll.getGravity() & ~Gravity.VERTICAL_GRAVITY_MASK) | Gravity.CENTER_VERTICAL);
+                        }
+                        if (ll.getPaddingTop() != 0 || ll.getPaddingBottom() != 0) {
+                            ll.setPadding(ll.getPaddingLeft(), 0, ll.getPaddingRight(), 0);
+                        }
+                        if (ll.getTranslationY() != 0f) ll.setTranslationY(0f);
+                        // Shrink the 8dp icon->text holding space to 2.5dp: text starts at x=183 (1:1 target)
+                        int wantGap = Math.round(dpF(activity, 2.5f));
+                        for (int ci = 0; ci < ll.getChildCount(); ci++) {
+                            View gap = ll.getChildAt(ci);
+                            if (gap == iv || gap instanceof ImageView || gap instanceof ViewGroup) continue;
+                            ViewGroup.LayoutParams glp = gap.getLayoutParams();
+                            if (glp != null && glp.width != wantGap) {
+                                glp.width = wantGap;
+                                gap.setLayoutParams(glp);
+                            }
+                        }
                     }
                 }
                 View statusContainer = locBar.findViewById(ID_LOCATION_BAR_STATUS);
@@ -592,6 +878,18 @@ public final class CouiBrowserUiEnhancer {
                             statusContainer.setLayoutParams(lslp);
                         }
                     }
+                    // Round 11: StatusView keeps Chromium's fixed 56dp (182px) LayoutParams height inside the
+                    // 40dp pill (LocationBarLayout params, neither Frame nor LinearLayout), which dropped the
+                    // icon 26px below the pill center. Force it to fill the pill whatever the params type.
+                    slp = statusContainer.getLayoutParams();
+                    if (slp != null && slp.height != ViewGroup.LayoutParams.MATCH_PARENT) {
+                        slp.height = ViewGroup.LayoutParams.MATCH_PARENT;
+                        if (slp instanceof ViewGroup.MarginLayoutParams) {
+                            ((ViewGroup.MarginLayoutParams) slp).topMargin = 0;
+                            ((ViewGroup.MarginLayoutParams) slp).bottomMargin = 0;
+                        }
+                        statusContainer.setLayoutParams(slp);
+                    }
                 }
                 if (urlBar instanceof TextView) {
                     TextView tv = (TextView) urlBar;
@@ -612,12 +910,19 @@ public final class CouiBrowserUiEnhancer {
                     }
                 }
             }
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            if (!sStyleErrLogged) { sStyleErrLogged = true; Log.w(TAG, "styleTopAddressBarGlass failed", t); }
+        }
     }
+    private static boolean sStyleErrLogged = false;
 
     /**
-     * Full-width Frosted Liquid Glass backdrop for the top header bar (ID_CONTROL_CONTAINER),
-     * paired with SurfaceViewBlurController's full-bleed 10dp hardware blur layer (ZERO corner leaks!).
+     * Round 11: Edge-to-edge frosted Liquid Glass backdrop for the whole top header (ID_CONTROL_CONTAINER),
+     * spanning y = 0 (behind the transparent status bar) down to the bottom of the toolbar. Paired with
+     * SurfaceViewBlurController's full-bleed hardware blur slot, so scrolling web content frosts seamlessly
+     * behind BOTH the status bar icons and the search pill (settings-search-example.jpg).
+     * Also draws the pill's soft ambient drop shadow strictly OUTSIDE the capsule (clipOutPath), so the
+     * translucent glass itself is never darkened. All shaders/paths are cached; zero per-frame allocs.
      */
     static final class CouiTopHeaderGlassDrawable extends Drawable {
         private final Context ctx;
@@ -626,6 +931,16 @@ public final class CouiBrowserUiEnhancer {
         private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint sheenPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint linePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint shadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        // HWUI ignores BlurMaskFilter on this path, so the ambient shadow is rasterized ONCE per pill size
+        // into an ALPHA_8 bitmap with a software Canvas (where BlurMaskFilter always works) and blitted.
+        private static android.graphics.Bitmap sShadowBmp;
+        private static int sShadowW = -1, sShadowH = -1;
+        private static int sShadowPad = 0;
+        private final Rect pill = new Rect();
+        private final RectF shadowRect = new RectF();
+        private final Path pillClip = new Path();
+        private boolean pillVisible = false;
         private int cachedW = -1, cachedH = -1;
         private boolean cachedDark = false;
 
@@ -633,6 +948,7 @@ public final class CouiBrowserUiEnhancer {
             this.ctx = ctx;
             this.isDark = isDark;
             this.realBlur = realBlur;
+
         }
 
         void updateState(boolean dark, boolean blur) {
@@ -643,6 +959,51 @@ public final class CouiBrowserUiEnhancer {
             }
         }
 
+        private float pillAlpha = 1f;
+
+        void setPillAlpha(float a) {
+            a = Math.max(0f, Math.min(1f, a));
+            if (Math.abs(a - pillAlpha) > 0.01f) {
+                pillAlpha = a;
+                invalidateSelf();
+            }
+        }
+
+        void setPillRect(int l, int t, int r, int b, boolean visible) {
+            if (pill.left == l && pill.top == t && pill.right == r && pill.bottom == b && pillVisible == visible) return;
+            pill.set(l, t, r, b);
+            pillVisible = visible;
+            pillClip.rewind();
+            float rad = (b - t) * 0.5f;
+            pillClip.addRoundRect(l, t, r, b, rad, rad, Path.Direction.CW);
+            invalidateSelf();
+        }
+
+        /** Rasterizes (once per pill size) a soft 10dp ambient capsule shadow mask: inset 5dp, ALPHA_8. */
+        private static android.graphics.Bitmap shadowBitmap(Context ctx, int pw, int ph) {
+            if (sShadowBmp != null && sShadowW == pw && sShadowH == ph) return sShadowBmp;
+            try {
+                float blur = dpF(ctx, 13f);
+                int pad = (int) Math.ceil(blur * 1.6f);
+                android.graphics.Bitmap bmp = android.graphics.Bitmap.createBitmap(
+                        pw + pad * 2, ph + pad * 2, android.graphics.Bitmap.Config.ALPHA_8);
+                Canvas sc = new Canvas(bmp);
+                Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+                p.setColor(0xFF000000);
+                p.setMaskFilter(new BlurMaskFilter(blur, BlurMaskFilter.Blur.NORMAL));
+                float inset = dpF(ctx, 5f);
+                float r = ph * 0.5f - dpF(ctx, 2f);
+                sc.drawRoundRect(pad + inset, pad + dpF(ctx, 2f), pad + pw - inset, pad + ph - dpF(ctx, 2f), r, r, p);
+                sShadowBmp = bmp;
+                sShadowW = pw;
+                sShadowH = ph;
+                sShadowPad = pad;
+                return bmp;
+            } catch (Throwable t) {
+                return null;
+            }
+        }
+
         @Override
         public void draw(Canvas canvas) {
             Rect b = getBounds();
@@ -650,9 +1011,9 @@ public final class CouiBrowserUiEnhancer {
             int h = b.height();
             if (w <= 0 || h <= 0) return;
 
-            // Match the calibrated bottom 3-piece Liquid Glass nav bar frost opacity
+            // Luminous frost over the 16dp hardware blur (same tint across status bar + header: no seam).
             if (realBlur) {
-                fillPaint.setColor(isDark ? 0x7A18181C : 0x8AFFFFFF);
+                fillPaint.setColor(isDark ? 0xA6101012 : 0xB8ECEDF0);
             } else {
                 fillPaint.setColor(isDark ? 0xF2141416 : 0xF5F5F7FA);
             }
@@ -665,17 +1026,30 @@ public final class CouiBrowserUiEnhancer {
                 sheenPaint.setShader(new LinearGradient(
                         0f, b.top, 0f, b.bottom,
                         isDark
-                                ? new int[]{0x42141416, 0x1018181C, 0x06000000}
-                                : new int[]{0x60F5F7FA, 0x18FFFFFF, 0x08E8EEF6},
-                        new float[]{0f, 0.35f, 1f},
+                                ? new int[]{0x26121214, 0x0A121214, 0x00000000}
+                                : new int[]{0x33FFFFFF, 0x00FFFFFF, 0x0E1A2030},
+                        new float[]{0f, 0.42f, 1f},
                         Shader.TileMode.CLAMP
                 ));
             }
             canvas.drawRect(b, sheenPaint);
 
+            // Soft diffuse ambient drop shadow under the floating search capsule (outside the glass only).
+            if (pillVisible && pillAlpha > 0.01f && !pill.isEmpty()) {
+                android.graphics.Bitmap bmp = shadowBitmap(ctx, pill.width(), pill.height());
+                if (bmp != null) {
+                    int save = canvas.save();
+                    canvas.clipOutPath(pillClip);
+                    shadowPaint.setColor(isDark ? 0xB3000000 : 0xFF1E2836);
+                    shadowPaint.setAlpha(Math.round((isDark ? 0x80 : 0x18) * pillAlpha));
+                    canvas.drawBitmap(bmp, pill.left - sShadowPad, pill.top - sShadowPad + dpF(ctx, 3.5f), shadowPaint);
+                    canvas.restoreToCount(save);
+                }
+            }
+
             // Delicate bottom frosted glass divider hairline (0.5dp)
             float stroke = Math.max(1f, dpF(ctx, 0.5f));
-            linePaint.setColor(isDark ? 0x18FFFFFF : 0x0E000000);
+            linePaint.setColor(isDark ? 0x14FFFFFF : 0x0C000000);
             canvas.drawRect(b.left, b.bottom - stroke, b.right, b.bottom, linePaint);
         }
 
@@ -685,8 +1059,9 @@ public final class CouiBrowserUiEnhancer {
     }
 
     /**
-     * Exact 1:1 ColorOS 17 File Manager & Settings Search Pill Drawable (44dp full capsule)
-     * with Kyant0/AndroidLiquidGlass 45° specular rim lighting and cached shaders (zero per-frame allocs).
+     * Round 11: 1:1 ColorOS 17 Settings search capsule (settings-search-example.jpg): luminous translucent
+     * white glass (dark glass in dark mode), crisp bright top + bottom specular rims (Kyant0/AndroidLiquidGlass
+     * HighlightStyle.Default), whisper outer contour. Cached shaders (zero per-frame allocs).
      */
     static final class CouiAddressBarGlassDrawable extends Drawable {
         private final Context ctx;
@@ -701,11 +1076,25 @@ public final class CouiBrowserUiEnhancer {
         private int cachedW = -1, cachedH = -1;
         private boolean cachedDark = false;
 
+        private float contentAlpha = 1f;
+
         CouiAddressBarGlassDrawable(Context ctx, boolean isDark, boolean realBlur) {
             this.ctx = ctx;
             this.isDark = isDark;
             this.realBlur = realBlur;
             rimPaint.setStyle(Paint.Style.STROKE);
+        }
+
+        void setContentAlpha(float a) {
+            a = Math.max(0f, Math.min(1f, a));
+            if (Math.abs(a - contentAlpha) > 0.01f) {
+                contentAlpha = a;
+                invalidateSelf();
+            }
+        }
+
+        private static int scaleAlpha(int color, float a) {
+            return (color & 0x00FFFFFF) | (Math.round((color >>> 24) * a) << 24);
         }
 
         void updateState(boolean dark, boolean blur) {
@@ -723,16 +1112,15 @@ public final class CouiBrowserUiEnhancer {
             int h = b.height();
             if (w <= 0 || h <= 0) return;
 
-            float inset = dpF(ctx, 0.5f);
-            rf.set(b.left + inset, b.top + inset, b.right - inset, b.bottom - inset);
+            if (contentAlpha <= 0.01f) return;
+            rf.set(b.left, b.top, b.right, b.bottom);
             float r = rf.height() * 0.5f;
+            final float ca = contentAlpha;
 
-            // Crisp ColorOS 17 File Manager "screenshot" / Settings "Search settings" Liquid Glass pill tint
-            // (airy translucent light pill with gentle contrast inside the frosted header bar)
             if (realBlur) {
-                fillPaint.setColor(isDark ? 0x8F28282E : 0xA8EDF0F5);
+                fillPaint.setColor(scaleAlpha(isDark ? 0x8C2C2C31 : 0xE0FFFFFF, ca));
             } else {
-                fillPaint.setColor(isDark ? 0xE626262A : 0xFFEAECEF);
+                fillPaint.setColor(scaleAlpha(isDark ? 0xF0262629 : 0xFFF9F9FA, ca));
             }
             canvas.drawRoundRect(rf, r, r, fillPaint);
 
@@ -740,39 +1128,45 @@ public final class CouiBrowserUiEnhancer {
                 cachedW = w;
                 cachedH = h;
                 cachedDark = isDark;
-                // 45° directional Liquid Glass sheen inspired by Kyant0/AndroidLiquidGlass HighlightStyle.Default
+                // Gentle top-lit vertical sheen (brighter top half, neutral bottom)
                 cachedSheen = new LinearGradient(
-                        rf.left, rf.top, rf.left + w * 0.35f, rf.bottom,
+                        0f, rf.top, 0f, rf.bottom,
                         isDark
-                                ? new int[]{0x22FFFFFF, 0x05FFFFFF, 0x0C000000}
-                                : new int[]{0x66FFFFFF, 0x1AFFFFFF, 0x0CE2E7F0},
-                        new float[]{0f, 0.48f, 1f},
+                                ? new int[]{0x14FFFFFF, 0x04FFFFFF, 0x08FFFFFF}
+                                : new int[]{0x26FFFFFF, 0x00FFFFFF, 0x14FFFFFF},
+                        new float[]{0f, 0.5f, 1f},
                         Shader.TileMode.CLAMP
                 );
+                // Bright specular rim at top AND bottom edges, fading out at mid-height
                 cachedRim = new LinearGradient(
-                        rf.left, rf.top, rf.right, rf.bottom,
+                        0f, rf.top, 0f, rf.bottom,
                         isDark
-                                ? new int[]{0x58FFFFFF, 0x18FFFFFF, 0x38FFFFFF}
-                                : new int[]{0xF0FFFFFF, 0x38C6D0DF, 0xCCFFFFFF},
-                        new float[]{0f, 0.5f, 1f},
+                                ? new int[]{0x4DFFFFFF, 0x0DFFFFFF, 0x0DFFFFFF, 0x2EFFFFFF}
+                                : new int[]{0xFFFFFFFF, 0x66FFFFFF, 0x66FFFFFF, 0xF2FFFFFF},
+                        new float[]{0f, 0.32f, 0.68f, 1f},
                         Shader.TileMode.CLAMP
                 );
             }
             sheenPaint.setShader(cachedSheen);
+            sheenPaint.setAlpha(Math.round(255 * ca));
             canvas.drawRoundRect(rf, r, r, sheenPaint);
 
-            // Delicate outer hairline contour
+            // Whisper outer contour so the capsule reads on very light pages
+            float hair = dpF(ctx, 0.5f);
+            rf.inset(hair * 0.5f, hair * 0.5f);
             rimPaint.setShader(null);
-            rimPaint.setStrokeWidth(dpF(ctx, 0.55f));
-            rimPaint.setColor(isDark ? 0x22FFFFFF : 0x14000000);
-            canvas.drawRoundRect(rf, r, r, rimPaint);
+            rimPaint.setStrokeWidth(hair);
+            rimPaint.setColor(scaleAlpha(isDark ? 0x1FFFFFFF : 0x07000000, ca));
+            canvas.drawRoundRect(rf, r - hair * 0.5f, r - hair * 0.5f, rimPaint);
 
-            // Inner 45° Liquid Glass specular bevel
-            float rimIn = dpF(ctx, 0.7f);
-            rf.inset(rimIn, rimIn);
-            rimPaint.setStrokeWidth(dpF(ctx, 0.9f));
+            // Inner specular rim (~1px at 520dpi)
+            float rimW = dpF(ctx, 0.85f);
+            rf.inset(hair * 0.5f + rimW * 0.5f, hair * 0.5f + rimW * 0.5f);
+            rimPaint.setStrokeWidth(rimW);
             rimPaint.setShader(cachedRim);
-            canvas.drawRoundRect(rf, Math.max(0f, r - rimIn), Math.max(0f, r - rimIn), rimPaint);
+            rimPaint.setAlpha(Math.round(255 * ca));
+            float ri = Math.max(0f, r - hair - rimW * 0.5f);
+            canvas.drawRoundRect(rf, ri, ri, rimPaint);
         }
 
         @Override public void setAlpha(int alpha) {}
@@ -780,12 +1174,20 @@ public final class CouiBrowserUiEnhancer {
         @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
     }
 
-    /** Exact 1:1 ColorOS 17 File Manager / Settings search magnifying-glass vector icon (19dp, 1.85dp stroke). */
+    /**
+     * Round 11: 1:1 ColorOS 17 Settings search magnifying glass, measured from settings-search-example.jpg
+     * at 520dpi: lens radius 6.45dp (to stroke center), 1.55dp round stroke, 45° handle ending at 1.99r,
+     * #686D74. The VISUAL bounding box (lens + handle) is centered in the drawable bounds, so the glyph is
+     * optically dead-center inside the pill (not the lens alone).
+     */
     static final class CouiSearchGlassIconDrawable extends Drawable {
         private final Context ctx;
         private boolean isDark;
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final int sizePx;
+        private final float lensR;
+        private final float handleEnd;
+        private final float centerShift;
 
         CouiSearchGlassIconDrawable(Context ctx, boolean isDark) {
             this.ctx = ctx;
@@ -794,7 +1196,10 @@ public final class CouiBrowserUiEnhancer {
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeCap(Paint.Cap.ROUND);
             paint.setStrokeJoin(Paint.Join.ROUND);
-            paint.setStrokeWidth(dpF(ctx, 1.85f));
+            paint.setStrokeWidth(dpF(ctx, 1.55f));
+            lensR = dpF(ctx, 6.45f);
+            handleEnd = lensR * 1.99f * 0.70710678f;   // per-axis offset of the handle tip
+            centerShift = (handleEnd - lensR) * 0.5f;   // shift lens so lens+handle bbox is centered
         }
 
         void setDarkMode(boolean dark) {
@@ -810,16 +1215,12 @@ public final class CouiBrowserUiEnhancer {
         @Override
         public void draw(Canvas canvas) {
             Rect b = getBounds();
-            float cx = b.exactCenterX();
-            float cy = b.exactCenterY();
-            float r = dpF(ctx, 6.2f);
-            float gx = cx - dpF(ctx, 1.3f);
-            float gy = cy - dpF(ctx, 1.3f);
-            paint.setColor(isDark ? 0x99FFFFFF : 0xFF6B6E75);
-            canvas.drawCircle(gx, gy, r, paint);
-            float hStart = r * 0.72f;
-            float hEnd = r * 1.32f;
-            canvas.drawLine(gx + hStart, gy + hStart, gx + hEnd, gy + hEnd, paint);
+            float gx = b.exactCenterX() - centerShift;
+            float gy = b.exactCenterY() - centerShift;
+            paint.setColor(isDark ? 0xB3FFFFFF : 0xFF686D74);
+            canvas.drawCircle(gx, gy, lensR, paint);
+            float hs = lensR * 0.70710678f;
+            canvas.drawLine(gx + hs, gy + hs, gx + handleEnd, gy + handleEnd, paint);
         }
 
         @Override public void setAlpha(int alpha) { paint.setAlpha(alpha); }
@@ -2407,7 +2808,7 @@ public final class CouiBrowserUiEnhancer {
                         cachedControlContainer = decor.findViewById(ID_CONTROL_CONTAINER);
                         if (cachedControlContainer != null) {
                             // Full-bleed edge-to-edge frosted Liquid Glass header (cornerDp = -1f -> 0px square, 10dp blur)
-                            blurController.setSlot(SurfaceViewBlurController.SLOT_ADDRESS_BAR, cachedControlContainer, -1f, 10);
+                            blurController.setSlot(SurfaceViewBlurController.SLOT_ADDRESS_BAR, cachedControlContainer, -1f, 16);
                         }
                     }
                     if (cachedControlContainer != null && cachedControlContainer.getTranslationY() < -0.5f) {
