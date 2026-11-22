@@ -128,6 +128,13 @@ public final class CouiBrowserUiEnhancer {
     private static final int ID_MENU_BUTTON_WRAPPER = 0x7f010785;
     private static final int ID_URL_BAR = 0x7f010ddd;
     private static final int ID_LOCATION_BAR = 0x7f01071f;
+    private static final int ID_LOCATION_BAR_BG = 0x7f010721;
+    private static final int ID_CONTROL_CONTAINER = 0x7f010366;
+    private static final int ID_TOOLBAR = 0x7f010d6a;
+    private static final int ID_TOOLBAR_CONTAINER = 0x7f010d71;
+    private static final int ID_TOOLBAR_HAIRLINE = 0x7f010d74;
+    private static final int ID_TOOLBAR_BOTTOM_HAIRLINE = 0x7f010d6e;
+    private static final int ID_TAB_SWITCHER_HOLDER = 0x7f010cd7;
 
     // Chromium native menu item IDs dispatched via ChromeTabbedActivity.R2(int, boolean, Bundle, Lpo9)
     private static final int MENU_NEW_TAB = 0x7f01087b;
@@ -313,13 +320,14 @@ public final class CouiBrowserUiEnhancer {
     }
 
     /**
-     * Hides redundant top toolbar buttons (Home, Extensions, Tab counter, Three-dots menu)
-     * by translating them offscreen (-200dp) and setting alpha=0f while keeping them View.VISIBLE
-     * with valid dimensions so programmatic clicks and MenuButton layout continue to work 100%.
+     * Permanently hides redundant top toolbar buttons (Home, Extensions, Tab counter, Three-dots menu)
+     * using scaleX=0, scaleY=0, alpha=0, and translationY=-400dp so ToolbarPhone scroll-up resets
+     * (which overwrite translationY/alpha on U/W) can NEVER make [2] or 3-dots reappear,
+     * while programmatic performClick() continues to work 100%.
      */
     static void hideTopToolbarButtons(View root) {
         if (root == null) return;
-        float offY = -dpF(root.getContext(), 220f);
+        float offY = -dpF(root.getContext(), 400f);
         int[] ids = {
             ID_HOME_BUTTON,
             ID_TOOLBAR_BUTTONS,
@@ -329,6 +337,7 @@ public final class CouiBrowserUiEnhancer {
             ID_FAKE_TAB_SWITCHER_BUTTON,
             ID_OPTIONAL_BUTTON,
             ID_OPTIONAL_CONTAINER,
+            ID_MENU_BUTTON,
             ID_MENU_BUTTON_WRAPPER,
             ID_MENU_BUTTON_CONTAINER
         };
@@ -336,13 +345,248 @@ public final class CouiBrowserUiEnhancer {
             View v = root.findViewById(id);
             if (v != null) {
                 if (v.getAlpha() != 0f) v.setAlpha(0f);
+                if (v.getScaleX() != 0f) v.setScaleX(0f);
+                if (v.getScaleY() != 0f) v.setScaleY(0f);
                 if (v.getTranslationY() != offY) v.setTranslationY(offY);
             }
         }
-        // Also collapse any bottom chin scrim if present so the 3-piece bar floats over web content
+        // Hide top toolbar hairlines so the frosted glass address bar floats cleanly
+        View hairline = root.findViewById(ID_TOOLBAR_HAIRLINE);
+        if (hairline != null && hairline.getVisibility() != View.GONE) {
+            hairline.setAlpha(0f);
+            hairline.setVisibility(View.GONE);
+        }
+        View botHairline = root.findViewById(ID_TOOLBAR_BOTTOM_HAIRLINE);
+        if (botHairline != null && botHairline.getVisibility() != View.GONE) {
+            botHairline.setAlpha(0f);
+            botHairline.setVisibility(View.GONE);
+        }
+        // Collapse any bottom chin scrim if present so the 3-piece bar floats over web content
         View bottomContainer = root.findViewById(0x7f0101f6); // id/bottom_container
         if (bottomContainer != null) {
             bottomContainer.setBackground(null);
+        }
+    }
+
+    private static Field sToolbarBgField;
+    private static Field sLocationBarDrawableField;
+    private static boolean sToolbarFieldsResolved = false;
+
+    /**
+     * Styles Titanium Browser's top address bar (ID_LOCATION_BAR) with authentic ColorOS 17
+     * frosted Liquid Glass (transparent ToolbarPhone/control_container + luminous frosted pill +
+     * crisp specular rim + subtle shadow) paired with SurfaceViewBlurController SLOT_ADDRESS_BAR.
+     * Also keeps the floating frosted address bar pinned cleanly at y=0 when Chromium scrolls
+     * Blink's contentOffset to 0 (so scrolling webpage content visibly glides and frosts directly
+     * behind the top address bar pill at 120fps!), while respecting Tab Switcher & Fullscreen mode.
+     */
+    static void styleTopAddressBarGlass(Activity activity, View root, boolean isDark, boolean realBlur) {
+        if (activity == null || root == null) return;
+        try {
+            boolean inTabSwitcher = false;
+            View tabHolder = root.findViewById(ID_TAB_SWITCHER_HOLDER);
+            if (tabHolder != null && tabHolder.getVisibility() == View.VISIBLE
+                    && tabHolder instanceof ViewGroup && ((ViewGroup) tabHolder).getChildCount() > 0) {
+                inTabSwitcher = true;
+            }
+            boolean isFullscreen = false;
+            if (Build.VERSION.SDK_INT >= 30) {
+                WindowInsets wi = root.getRootWindowInsets();
+                if (wi != null && !wi.isVisible(WindowInsets.Type.statusBars())) {
+                    isFullscreen = true;
+                }
+            }
+
+            View controlContainer = root.findViewById(ID_CONTROL_CONTAINER);
+            if (controlContainer != null) {
+                if (controlContainer.getBackground() != null) {
+                    controlContainer.setBackground(null);
+                }
+                // Keep top frosted glass address bar floating over scrolling webpage content
+                // when Chromium translates it offscreen during scroll-down (contentOffset -> 0)
+                if (!inTabSwitcher && !isFullscreen) {
+                    if (controlContainer.getTranslationY() < -0.5f) {
+                        controlContainer.setTranslationY(0f);
+                    }
+                    if (controlContainer.getVisibility() == View.INVISIBLE) {
+                        controlContainer.setVisibility(View.VISIBLE);
+                    }
+                }
+            }
+            View toolbarContainer = root.findViewById(ID_TOOLBAR_CONTAINER);
+            if (toolbarContainer != null) {
+                if (toolbarContainer.getBackground() != null) {
+                    toolbarContainer.setBackground(null);
+                }
+                if (!inTabSwitcher && !isFullscreen && toolbarContainer.getTranslationY() < -0.5f) {
+                    toolbarContainer.setTranslationY(0f);
+                }
+            }
+            View toolbar = root.findViewById(ID_TOOLBAR);
+            if (toolbar != null) {
+                if (toolbar.getBackground() != null) {
+                    toolbar.setBackground(null);
+                }
+                if (!inTabSwitcher && !isFullscreen) {
+                    if (toolbar.getTranslationY() < -0.5f) {
+                        toolbar.setTranslationY(0f);
+                    }
+                    if (toolbar.getVisibility() == View.INVISIBLE) {
+                        toolbar.setVisibility(View.VISIBLE);
+                    }
+                }
+                if (!sToolbarFieldsResolved) {
+                    sToolbarFieldsResolved = true;
+                    try {
+                        sToolbarBgField = toolbar.getClass().getDeclaredField("s0");
+                        sToolbarBgField.setAccessible(true);
+                    } catch (Throwable ignored) {}
+                    try {
+                        sLocationBarDrawableField = toolbar.getClass().getDeclaredField("t0");
+                        sLocationBarDrawableField.setAccessible(true);
+                    } catch (Throwable ignored) {}
+                }
+                if (sToolbarBgField != null) {
+                    Object bgObj = sToolbarBgField.get(toolbar);
+                    if (bgObj instanceof ColorDrawable) {
+                        ColorDrawable cd = (ColorDrawable) bgObj;
+                        if (cd.getColor() != Color.TRANSPARENT) {
+                            cd.setColor(Color.TRANSPARENT);
+                        }
+                    }
+                }
+                if (sLocationBarDrawableField != null) {
+                    Object lbObj = sLocationBarDrawableField.get(toolbar);
+                    if (lbObj instanceof Drawable) {
+                        Drawable d = (Drawable) lbObj;
+                        if (d.getAlpha() != 0) {
+                            d.setAlpha(0);
+                        }
+                    }
+                }
+            }
+            View locBarBg = root.findViewById(ID_LOCATION_BAR_BG);
+            if (locBarBg != null && locBarBg.getAlpha() != 0f) {
+                locBarBg.setAlpha(0f);
+            }
+            View locBar = root.findViewById(ID_LOCATION_BAR);
+            if (locBar != null) {
+                View urlBar = root.findViewById(ID_URL_BAR);
+                boolean focused = (urlBar != null && urlBar.hasFocus());
+                Drawable curBg = locBar.getBackground();
+                CouiAddressBarGlassDrawable glassBg;
+                if (curBg instanceof CouiAddressBarGlassDrawable) {
+                    glassBg = (CouiAddressBarGlassDrawable) curBg;
+                    glassBg.updateState(isDark, realBlur && !focused);
+                } else {
+                    glassBg = new CouiAddressBarGlassDrawable(activity, isDark, realBlur && !focused);
+                    locBar.setBackground(glassBg);
+                    locBar.setElevation(dpF(activity, 8f));
+                    if (Build.VERSION.SDK_INT >= 28) {
+                        locBar.setOutlineSpotShadowColor(0x28000000);
+                        locBar.setOutlineAmbientShadowColor(0x16000000);
+                    }
+                    locBar.setOutlineProvider(new ViewOutlineProvider() {
+                        @Override
+                        public void getOutline(View view, Outline outline) {
+                            float r = view.getHeight() * 0.5f;
+                            outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), r);
+                            outline.setAlpha(1.0f);
+                        }
+                    });
+                    locBar.setClipToOutline(false);
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /** Custom ColorOS 17 Frosted Liquid Glass pill Drawable for the top address bar (ID_LOCATION_BAR). */
+    static final class CouiAddressBarGlassDrawable extends Drawable {
+        private final Context ctx;
+        private boolean isDark;
+        private boolean realBlur;
+        private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint sheenPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF rf = new RectF();
+
+        CouiAddressBarGlassDrawable(Context ctx, boolean isDark, boolean realBlur) {
+            this.ctx = ctx;
+            this.isDark = isDark;
+            this.realBlur = realBlur;
+            rimPaint.setStyle(Paint.Style.STROKE);
+        }
+
+        void updateState(boolean dark, boolean blur) {
+            if (this.isDark != dark || this.realBlur != blur) {
+                this.isDark = dark;
+                this.realBlur = blur;
+                invalidateSelf();
+            }
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            Rect b = getBounds();
+            int w = b.width();
+            int h = b.height();
+            if (w <= 0 || h <= 0) return;
+
+            float inset = dpF(ctx, 0.5f);
+            rf.set(b.left + inset, b.top + inset, b.right - inset, b.bottom - inset);
+            float r = rf.height() * 0.5f;
+
+            // Luminous translucent frosted glass fill matching calibrated bottom Liquid Glass nav bar
+            if (realBlur) {
+                fillPaint.setColor(isDark ? 0x781E1E22 : 0x86FFFFFF);
+            } else {
+                fillPaint.setColor(isDark ? 0xDC222226 : 0xEBF7F9FC);
+            }
+            canvas.drawRoundRect(rf, r, r, fillPaint);
+
+            // Subtle top-left-to-bottom specular sheen
+            LinearGradient sheen = new LinearGradient(
+                    rf.left, rf.top, rf.left + w * 0.45f, rf.bottom,
+                    isDark
+                            ? new int[]{0x26FFFFFF, 0x06FFFFFF, 0x10000000}
+                            : new int[]{0x48FFFFFF, 0x10FFFFFF, 0x12E4EBF4},
+                    new float[]{0f, 0.52f, 1f},
+                    Shader.TileMode.CLAMP
+            );
+            sheenPaint.setShader(sheen);
+            canvas.drawRoundRect(rf, r, r, sheenPaint);
+
+            // Delicate outer hairline contour (reads cleanly against pure white webpages & dark photos)
+            rimPaint.setShader(null);
+            rimPaint.setStrokeWidth(dpF(ctx, 0.65f));
+            rimPaint.setColor(isDark ? 0x26FFFFFF : 0x1A000000);
+            canvas.drawRoundRect(rf, r, r, rimPaint);
+
+            // Crisp bright inner Liquid Glass specular rim
+            float rimIn = dpF(ctx, 0.75f);
+            rf.inset(rimIn, rimIn);
+            LinearGradient rimGrad = new LinearGradient(
+                    rf.left, rf.top, rf.right, rf.bottom,
+                    isDark
+                            ? new int[]{0x6CFFFFFF, 0x1EFFFFFF, 0x44FFFFFF}
+                            : new int[]{0xFFFFFFFF, 0x40C6D0DF, 0xDCFFFFFF},
+                    new float[]{0f, 0.5f, 1f},
+                    Shader.TileMode.CLAMP
+            );
+            rimPaint.setStrokeWidth(dpF(ctx, 1.0f));
+            rimPaint.setShader(rimGrad);
+            canvas.drawRoundRect(rf, Math.max(0f, r - rimIn), Math.max(0f, r - rimIn), rimPaint);
+        }
+
+        @Override
+        public void setAlpha(int alpha) {}
+
+        @Override
+        public void setColorFilter(ColorFilter colorFilter) {}
+
+        @Override
+        public int getOpacity() {
+            return PixelFormat.TRANSLUCENT;
         }
     }
 
@@ -1543,7 +1787,8 @@ public final class CouiBrowserUiEnhancer {
         static final int SLOT_CENTER = 1;
         static final int SLOT_RIGHT = 2;
         static final int SLOT_FLYOUT = 3;
-        private static final int SLOT_COUNT = 4;
+        static final int SLOT_ADDRESS_BAR = 4;
+        private static final int SLOT_COUNT = 5;
 
         private static final Method M_SET_EFFECT_LAYER;
         private static final Method M_SET_BLUR_RADIUS;
@@ -1895,7 +2140,13 @@ public final class CouiBrowserUiEnhancer {
             @Override
             public boolean onPreDraw() {
                 if (activity.getWindow() != null) {
-                    hideTopToolbarButtons(activity.getWindow().getDecorView());
+                    View decor = activity.getWindow().getDecorView();
+                    hideTopToolbarButtons(decor);
+                    View locBar = decor.findViewById(ID_LOCATION_BAR);
+                    if (locBar != null) {
+                        blurController.setSlot(SurfaceViewBlurController.SLOT_ADDRESS_BAR, locBar, 0f, 11);
+                    }
+                    styleTopAddressBarGlass(activity, decor, isDark, blurController.isBlurActive());
                 }
                 blurController.update();
                 return true;
@@ -1916,8 +2167,8 @@ public final class CouiBrowserUiEnhancer {
             currentBottomPadPx = dp(activity, 24);
             setPadding(padH, padT, padH, currentBottomPadPx);
 
-            int barHeight = dp(activity, 56);
-            int circleSize = dp(activity, 56);
+            int barHeight = dp(activity, 58);
+            int circleSize = dp(activity, 58);
             int sideGap = dp(activity, 12);
 
             // 1. Detached Left Glass Circle (Back)
@@ -1941,9 +2192,11 @@ public final class CouiBrowserUiEnhancer {
             LayoutParams rightLp = new LayoutParams(circleSize, barHeight, Gravity.END | Gravity.BOTTOM);
             addView(rightCircleView, rightLp);
 
-            blurController.setSlot(SurfaceViewBlurController.SLOT_LEFT, leftCircleView, 0f, 22);
-            blurController.setSlot(SurfaceViewBlurController.SLOT_CENTER, centerPillView, 0f, 22);
-            blurController.setSlot(SurfaceViewBlurController.SLOT_RIGHT, rightCircleView, 0f, 22);
+            // Calibrated crisp frosted Liquid Glass blur radius (10dp = ~32px at 520dpi)
+            // matching navmenu-blur-in-gallery.mp4 so shapes & colors underneath remain softly legible!
+            blurController.setSlot(SurfaceViewBlurController.SLOT_LEFT, leftCircleView, 0f, 10);
+            blurController.setSlot(SurfaceViewBlurController.SLOT_CENTER, centerPillView, 0f, 10);
+            blurController.setSlot(SurfaceViewBlurController.SLOT_RIGHT, rightCircleView, 0f, 10);
 
             setOnApplyWindowInsetsListener(new OnApplyWindowInsetsListener() {
                 @Override
@@ -1963,7 +2216,7 @@ public final class CouiBrowserUiEnhancer {
                     v.setPadding(hPad, tPad, hPad, currentBottomPadPx);
                     setImeHidden(imeVisible);
                     if (flyoutOverlay != null) {
-                        flyoutOverlay.updateAnchorMargin(currentBottomPadPx + dp(v.getContext(), 56 + 10));
+                        flyoutOverlay.updateAnchorMargin(currentBottomPadPx + dp(v.getContext(), 58 + 10));
                     }
                     return insets;
                 }
@@ -2046,7 +2299,7 @@ public final class CouiBrowserUiEnhancer {
                 }
             }
             flyoutOverlay.updateTheme(isDark);
-            flyoutOverlay.updateAnchorMargin(currentBottomPadPx + dp(activity, 56 + 10));
+            flyoutOverlay.updateAnchorMargin(currentBottomPadPx + dp(activity, 58 + 10));
             flyoutOverlay.bringToFront();
             if (flyoutOverlay.isOpen()) {
                 flyoutOverlay.dismiss();
@@ -2167,10 +2420,11 @@ public final class CouiBrowserUiEnhancer {
                 float radius = Math.min(w, h) * 0.5f;
                 circleRect.set(0.75f, 0.75f, w - 0.75f, h - 0.75f);
 
-                // 1. Bright creamy frosted Liquid Glass fill over real SurfaceControl hardware blur
+                // 1. Calibrated luminous translucent frosted Liquid Glass fill over 10dp SurfaceControl blur
+                //    (lets colors & forms scrolling underneath glow softly through, 1:1 navmenu-blur-in-gallery.mp4)
                 boolean realBlur = blurController.isBlurActive();
                 if (realBlur) {
-                    surfacePaint.setColor(isDark ? 0x9C1E1E20 : 0xC2F9FAFC);
+                    surfacePaint.setColor(isDark ? 0x781E1E22 : 0x86FFFFFF);
                 } else {
                     surfacePaint.setColor(isDark ? 0xD81E1E20 : 0xEBF8F9FB);
                 }
@@ -2179,8 +2433,8 @@ public final class CouiBrowserUiEnhancer {
                 LinearGradient sheen = new LinearGradient(
                         0, 0, w * 0.6f, h,
                         isDark
-                                ? new int[]{0x28FFFFFF, 0x08FFFFFF, 0x14000000}
-                                : new int[]{0x4CFFFFFF, 0x10FFFFFF, 0x16E4EAF3},
+                                ? new int[]{0x26FFFFFF, 0x06FFFFFF, 0x10000000}
+                                : new int[]{0x48FFFFFF, 0x10FFFFFF, 0x10E4EAF3},
                         new float[]{0f, 0.52f, 1f},
                         Shader.TileMode.CLAMP
                 );
@@ -2201,34 +2455,35 @@ public final class CouiBrowserUiEnhancer {
                     canvas.drawRoundRect(circleRect, radius, radius, spotlightPaint);
                 }
 
-                // 3. Subtle outer hairline contour + bright inner specular rim (reads crisply over white & dark)
+                // 3. Subtle outer hairline contour + crisp bright specular rim
                 borderPaint.setShader(null);
-                borderPaint.setStrokeWidth(dpF(getContext(), 0.75f));
-                borderPaint.setColor(isDark ? 0x26FFFFFF : 0x1A000000);
+                borderPaint.setStrokeWidth(dpF(getContext(), 0.65f));
+                borderPaint.setColor(isDark ? 0x26FFFFFF : 0x18000000);
                 canvas.drawRoundRect(circleRect, radius, radius, borderPaint);
 
                 circleRect.inset(dpF(getContext(), 0.8f), dpF(getContext(), 0.8f));
                 LinearGradient rimGrad = new LinearGradient(
                         0, 0, w, h,
                         isDark
-                                ? new int[]{0x70FFFFFF, 0x1EFFFFFF, 0x48FFFFFF}
-                                : new int[]{0xFAFFFFFF, 0x52CDD5E0, 0xDCFFFFFF},
+                                ? new int[]{0x76FFFFFF, 0x1EFFFFFF, 0x4CFFFFFF}
+                                : new int[]{0xFFFFFFFF, 0x3EC6D0DE, 0xE6FFFFFF},
                         new float[]{0f, 0.5f, 1f},
                         Shader.TileMode.CLAMP
                 );
-                borderPaint.setStrokeWidth(dpF(getContext(), 1.0f));
+                borderPaint.setStrokeWidth(dpF(getContext(), 1.05f));
                 borderPaint.setShader(rimGrad);
                 canvas.drawRoundRect(circleRect, radius - dpF(getContext(), 0.8f), radius - dpF(getContext(), 0.8f), borderPaint);
 
-                // 4. Crisp ColorOS 17 Vector Icon (21dp centered in 56dp circle)
-                iconPaint.setColor(isDark ? 0xF0FFFFFF : 0xFF191919);
+                // 4. 1:1 ColorOS 17 Bold Vector Icons (23.5dp Back / 22.5dp Menu, 2.15dp stroke)
+                iconPaint.setColor(isDark ? 0xF5FFFFFF : 0xFF141414);
+                iconPaint.setStrokeWidth(dpF(getContext(), 2.15f));
                 float cx = w * 0.5f;
                 float cy = h * 0.5f;
                 if (isBack) {
-                    drawCouiBackArrow(canvas, cx, cy, dpF(getContext(), 21f), iconPaint);
+                    drawCouiBackArrow(canvas, cx, cy, dpF(getContext(), 23.5f), iconPaint);
                 } else {
-                    float r = dpF(getContext(), 7.5f);
-                    float dy = dpF(getContext(), 5.2f);
+                    float r = dpF(getContext(), 9.2f);
+                    float dy = dpF(getContext(), 6.0f);
                     canvas.drawLine(cx - r, cy - dy, cx + r, cy - dy, iconPaint);
                     canvas.drawLine(cx - r, cy, cx + r, cy, iconPaint);
                     canvas.drawLine(cx - r, cy + dy, cx + r, cy + dy, iconPaint);
@@ -2388,10 +2643,10 @@ public final class CouiBrowserUiEnhancer {
                 float radius = h * 0.5f;
                 capsuleRect.set(0.75f, 0.75f, w - 0.75f, h - 0.75f);
 
-                // 1. Bright creamy frosted Liquid Glass capsule fill
+                // 1. Calibrated luminous translucent frosted Liquid Glass capsule fill
                 boolean realBlur = blurController.isBlurActive();
                 if (realBlur) {
-                    surfacePaint.setColor(isDark ? 0x9C1E1E20 : 0xC2F9FAFC);
+                    surfacePaint.setColor(isDark ? 0x781E1E22 : 0x86FFFFFF);
                 } else {
                     surfacePaint.setColor(isDark ? 0xD81E1E20 : 0xEBF8F9FB);
                 }
@@ -2400,8 +2655,8 @@ public final class CouiBrowserUiEnhancer {
                 LinearGradient sheen = new LinearGradient(
                         0, 0, w * 0.45f, h,
                         isDark
-                                ? new int[]{0x28FFFFFF, 0x08FFFFFF, 0x14000000}
-                                : new int[]{0x4CFFFFFF, 0x10FFFFFF, 0x16E4EAF3},
+                                ? new int[]{0x26FFFFFF, 0x06FFFFFF, 0x10000000}
+                                : new int[]{0x48FFFFFF, 0x10FFFFFF, 0x10E4EAF3},
                         new float[]{0f, 0.52f, 1f},
                         Shader.TileMode.CLAMP
                 );
@@ -2422,22 +2677,22 @@ public final class CouiBrowserUiEnhancer {
                     canvas.drawRoundRect(capsuleRect, radius, radius, spotlightPaint);
                 }
 
-                // 3. Subtle outer hairline contour + crisp inner specular rim highlight
+                // 3. Subtle outer hairline contour + crisp bright specular rim highlight
                 borderPaint.setShader(null);
-                borderPaint.setStrokeWidth(dpF(getContext(), 0.75f));
-                borderPaint.setColor(isDark ? 0x26FFFFFF : 0x1A000000);
+                borderPaint.setStrokeWidth(dpF(getContext(), 0.65f));
+                borderPaint.setColor(isDark ? 0x26FFFFFF : 0x18000000);
                 canvas.drawRoundRect(capsuleRect, radius, radius, borderPaint);
 
                 capsuleRect.inset(dpF(getContext(), 0.8f), dpF(getContext(), 0.8f));
                 LinearGradient rimGrad = new LinearGradient(
                         0, 0, w, h,
                         isDark
-                                ? new int[]{0x70FFFFFF, 0x1EFFFFFF, 0x48FFFFFF}
-                                : new int[]{0xFAFFFFFF, 0x52CDD5E0, 0xDCFFFFFF},
+                                ? new int[]{0x76FFFFFF, 0x1EFFFFFF, 0x4CFFFFFF}
+                                : new int[]{0xFFFFFFFF, 0x3EC6D0DE, 0xE6FFFFFF},
                         new float[]{0f, 0.5f, 1f},
                         Shader.TileMode.CLAMP
                 );
-                borderPaint.setStrokeWidth(dpF(getContext(), 1.0f));
+                borderPaint.setStrokeWidth(dpF(getContext(), 1.05f));
                 borderPaint.setShader(rimGrad);
                 canvas.drawRoundRect(capsuleRect, radius - dpF(getContext(), 0.8f), radius - dpF(getContext(), 0.8f), borderPaint);
 
@@ -2462,31 +2717,30 @@ public final class CouiBrowserUiEnhancer {
                     canvas.drawRoundRect(dropletRect, dropR, dropR, dropletRimPaint);
                 }
 
-                // 5. Draw 3 center items (Search, Home, Tabs):
-                //    Selected = FILLED solid black icon + bold black label (matches navmenu-gallery.jpg 1:1)
-                //    Unselected = crisp OUTLINE muted icon + regular label
-                int selectedColor = isDark ? 0xF5FFFFFF : 0xFF191919;
-                int unselectedColor = isDark ? 0x99FFFFFF : 0xFF666666;
-                int cutoutColor = isDark ? 0xFF232325 : 0xFFF2F5F8;
+                // 5. Draw 3 center items (Search, Home, Tabs) at 1:1 ColorOS 17 File Manager & Gallery scale:
+                //    22dp geometric icons, bold negative-space filled active + crisp 2.0dp outline inactive
+                int selectedColor = isDark ? 0xFAFFFFFF : 0xFF141414;
+                int unselectedColor = isDark ? 0xA8FFFFFF : 0xFF555555;
+                int cutoutColor = isDark ? 0xFF232327 : 0xFFF4F6F9;
 
                 for (int i = 0; i < CENTER_ITEM_COUNT; i++) {
                     float icx = itemCenterX(i);
                     boolean isSel = (i == selectedCenterIndex);
                     int col = isSel ? selectedColor : unselectedColor;
                     iconStrokePaint.setColor(col);
-                    iconStrokePaint.setStrokeWidth(dpF(getContext(), isSel ? 2.15f : 1.75f));
+                    iconStrokePaint.setStrokeWidth(dpF(getContext(), isSel ? 2.4f : 1.95f));
                     iconFillPaint.setColor(col);
                     iconCutoutPaint.setColor(cutoutColor);
-                    iconCutoutPaint.setStrokeWidth(dpF(getContext(), 1.8f));
+                    iconCutoutPaint.setStrokeWidth(dpF(getContext(), 2.0f));
 
                     textPaint.setColor(col);
                     textPaint.setFakeBoldText(isSel);
 
-                    float iconCy = dpF(getContext(), 19.5f);
-                    float iconR = dpF(getContext(), 8.3f);
+                    float iconCy = dpF(getContext(), 21.0f);
+                    float iconR = dpF(getContext(), 10.6f); // ~21.5-22.5dp authentic ColorOS 17 icon box
                     drawCenterNavIcon(canvas, i, icx, iconCy, iconR, isSel);
 
-                    float textY = h - dpF(getContext(), 9.2f);
+                    float textY = h - dpF(getContext(), 7.8f);
                     canvas.drawText(CENTER_LABELS[i], icx, textY, textPaint);
                 }
             }
@@ -2494,60 +2748,82 @@ public final class CouiBrowserUiEnhancer {
             private void drawCenterNavIcon(Canvas c, int index, float cx, float cy, float r, boolean selected) {
                 Path p = new Path();
                 switch (index) {
-                    case 0: // Search (magnifying glass: filled solid lens when selected, crisp outline when unselected)
+                    case 0: // Search (1:1 ColorOS 17 bold thick-ring lens active + clean outline inactive)
                         float gx = cx - r * 0.14f;
                         float gy = cy - r * 0.14f;
-                        float gr = r * 0.60f;
+                        float gr = r * 0.62f;
                         if (selected) {
-                            c.drawCircle(gx, gy, gr + dpF(getContext(), 0.5f), iconFillPaint);
-                            // Subtle inner glass reflection dot inside solid lens
+                            // Thick bold solid ring bezel (negative-space inner lens cutout, NEVER a black lollipop!)
+                            c.drawCircle(gx, gy, gr + dpF(getContext(), 0.7f), iconFillPaint);
                             iconCutoutPaint.setStyle(Paint.Style.FILL);
-                            c.drawCircle(gx - gr * 0.22f, gy - gr * 0.22f, gr * 0.24f, iconCutoutPaint);
+                            c.drawCircle(gx, gy, gr * 0.44f, iconCutoutPaint);
                             iconCutoutPaint.setStyle(Paint.Style.STROKE);
-                            iconStrokePaint.setStrokeWidth(dpF(getContext(), 2.5f));
-                            c.drawLine(cx + r * 0.28f, cy + r * 0.28f, cx + r * 0.84f, cy + r * 0.84f, iconStrokePaint);
+                            iconStrokePaint.setStrokeWidth(dpF(getContext(), 2.85f));
+                            c.drawLine(cx + r * 0.30f, cy + r * 0.30f, cx + r * 0.84f, cy + r * 0.84f, iconStrokePaint);
                         } else {
                             c.drawCircle(gx, gy, gr, iconStrokePaint);
-                            c.drawLine(cx + r * 0.32f, cy + r * 0.32f, cx + r * 0.84f, cy + r * 0.84f, iconStrokePaint);
+                            c.drawLine(cx + r * 0.34f, cy + r * 0.34f, cx + r * 0.84f, cy + r * 0.84f, iconStrokePaint);
                         }
                         break;
-                    case 1: // Home (solid filled ColorOS 17 rounded house silhouette when selected, outline when unselected)
+                    case 1: // Home (1:1 ColorOS 17 rounded-roof solid house with pill door cutout active, clean rounded outline inactive)
                         if (selected) {
                             p.moveTo(cx, cy - r * 0.86f);
-                            p.lineTo(cx + r * 0.88f, cy - r * 0.04f);
-                            p.lineTo(cx + r * 0.68f, cy - r * 0.04f);
-                            p.lineTo(cx + r * 0.68f, cy + r * 0.78f);
-                            p.quadTo(cx + r * 0.68f, cy + r * 0.86f, cx + r * 0.58f, cy + r * 0.86f);
-                            p.lineTo(cx - r * 0.58f, cy + r * 0.86f);
-                            p.quadTo(cx - r * 0.68f, cy + r * 0.86f, cx - r * 0.68f, cy + r * 0.78f);
-                            p.lineTo(cx - r * 0.68f, cy - r * 0.04f);
-                            p.lineTo(cx - r * 0.88f, cy - r * 0.04f);
+                            p.quadTo(cx + r * 0.14f, cy - r * 0.86f, cx + r * 0.86f, cy - r * 0.16f);
+                            p.quadTo(cx + r * 0.94f, cy - r * 0.08f, cx + r * 0.84f, cy - r * 0.02f);
+                            p.lineTo(cx + r * 0.74f, cy - r * 0.02f);
+                            p.lineTo(cx + r * 0.74f, cy + r * 0.66f);
+                            p.quadTo(cx + r * 0.74f, cy + r * 0.86f, cx + r * 0.52f, cy + r * 0.86f);
+                            p.lineTo(cx - r * 0.52f, cy + r * 0.86f);
+                            p.quadTo(cx - r * 0.74f, cy + r * 0.86f, cx - r * 0.74f, cy + r * 0.66f);
+                            p.lineTo(cx - r * 0.74f, cy - r * 0.02f);
+                            p.lineTo(cx - r * 0.84f, cy - r * 0.02f);
+                            p.quadTo(cx - r * 0.94f, cy - r * 0.08f, cx - r * 0.86f, cy - r * 0.16f);
+                            p.quadTo(cx - r * 0.14f, cy - r * 0.86f, cx, cy - r * 0.86f);
                             p.close();
                             c.drawPath(p, iconFillPaint);
-                            // Crisp inner door bar cutout
-                            c.drawLine(cx - r * 0.20f, cy + r * 0.42f, cx + r * 0.20f, cy + r * 0.42f, iconCutoutPaint);
+                            // Crisp rounded negative-space door pill inside lower house body
+                            iconCutoutPaint.setStrokeWidth(dpF(getContext(), 2.2f));
+                            c.drawLine(cx - r * 0.24f, cy + r * 0.44f, cx + r * 0.24f, cy + r * 0.44f, iconCutoutPaint);
                         } else {
-                            p.moveTo(cx - r * 0.84f, cy + r * 0.04f);
-                            p.lineTo(cx, cy - r * 0.78f);
-                            p.lineTo(cx + r * 0.84f, cy + r * 0.04f);
-                            p.moveTo(cx - r * 0.60f, cy - r * 0.08f);
-                            p.lineTo(cx - r * 0.60f, cy + r * 0.78f);
-                            p.lineTo(cx + r * 0.60f, cy + r * 0.78f);
-                            p.lineTo(cx + r * 0.60f, cy - r * 0.08f);
+                            p.moveTo(cx - r * 0.84f, cy - r * 0.08f);
+                            p.lineTo(cx - r * 0.10f, cy - r * 0.78f);
+                            p.quadTo(cx, cy - r * 0.87f, cx + r * 0.10f, cy - r * 0.78f);
+                            p.lineTo(cx + r * 0.84f, cy - r * 0.08f);
+                            p.moveTo(cx - r * 0.66f, cy - r * 0.20f);
+                            p.lineTo(cx - r * 0.66f, cy + r * 0.62f);
+                            p.quadTo(cx - r * 0.66f, cy + r * 0.82f, cx - r * 0.46f, cy + r * 0.82f);
+                            p.lineTo(cx + r * 0.46f, cy + r * 0.82f);
+                            p.quadTo(cx + r * 0.66f, cy + r * 0.82f, cx + r * 0.66f, cy + r * 0.62f);
+                            p.lineTo(cx + r * 0.66f, cy - r * 0.20f);
                             c.drawPath(p, iconStrokePaint);
+                            c.drawLine(cx - r * 0.22f, cy + r * 0.42f, cx + r * 0.22f, cy + r * 0.42f, iconStrokePaint);
                         }
                         break;
-                    case 2: // Tabs (solid filled squircle with crisp cutout '+' when selected, outline when unselected)
-                        RectF tabRect = new RectF(cx - r * 0.74f, cy - r * 0.74f, cx + r * 0.74f, cy + r * 0.74f);
-                        float cr = r * 0.40f;
+                    case 2: // Tabs (1:1 ColorOS 17 layered rounded card + crisp '+' matching Gallery/File Manager proportions)
+                        float off = r * 0.13f;
+                        RectF frontRect = new RectF(cx - r * 0.80f, cy - r * 0.64f, cx + r * 0.62f, cy + r * 0.78f);
+                        float cr = r * 0.34f;
+                        // Subtle stacked back-tab top-right arc peek
+                        p.moveTo(cx - r * 0.44f, cy - r * 0.84f);
+                        p.lineTo(cx + r * 0.48f, cy - r * 0.84f);
+                        p.quadTo(cx + r * 0.84f, cy - r * 0.84f, cx + r * 0.84f, cy - r * 0.48f);
+                        p.lineTo(cx + r * 0.84f, cy + r * 0.44f);
+                        iconStrokePaint.setStrokeWidth(dpF(getContext(), selected ? 2.15f : 1.75f));
+                        c.drawPath(p, iconStrokePaint);
                         if (selected) {
-                            c.drawRoundRect(tabRect, cr, cr, iconFillPaint);
-                            c.drawLine(cx - r * 0.34f, cy, cx + r * 0.34f, cy, iconCutoutPaint);
-                            c.drawLine(cx, cy - r * 0.34f, cx, cy + r * 0.34f, iconCutoutPaint);
+                            c.drawRoundRect(frontRect, cr, cr, iconFillPaint);
+                            float fcx = frontRect.centerX();
+                            float fcy = frontRect.centerY();
+                            iconCutoutPaint.setStrokeWidth(dpF(getContext(), 2.15f));
+                            c.drawLine(fcx - r * 0.32f, fcy, fcx + r * 0.32f, fcy, iconCutoutPaint);
+                            c.drawLine(fcx, fcy - r * 0.32f, fcx, fcy + r * 0.32f, iconCutoutPaint);
                         } else {
-                            c.drawRoundRect(tabRect, cr, cr, iconStrokePaint);
-                            c.drawLine(cx - r * 0.32f, cy, cx + r * 0.32f, cy, iconStrokePaint);
-                            c.drawLine(cx, cy - r * 0.32f, cx, cy + r * 0.32f, iconStrokePaint);
+                            iconStrokePaint.setStrokeWidth(dpF(getContext(), 1.95f));
+                            c.drawRoundRect(frontRect, cr, cr, iconStrokePaint);
+                            float fcx = frontRect.centerX();
+                            float fcy = frontRect.centerY();
+                            c.drawLine(fcx - r * 0.30f, fcy, fcx + r * 0.30f, fcy, iconStrokePaint);
+                            c.drawLine(fcx, fcy - r * 0.30f, fcx, fcy + r * 0.30f, iconStrokePaint);
                         }
                         break;
                 }
@@ -2802,7 +3078,7 @@ public final class CouiBrowserUiEnhancer {
             addView(cardView, clp);
 
             if (blurController != null) {
-                blurController.setSlot(SurfaceViewBlurController.SLOT_FLYOUT, cardView, 20f, 24);
+                blurController.setSlot(SurfaceViewBlurController.SLOT_FLYOUT, cardView, 20f, 13);
             }
         }
 
@@ -2995,7 +3271,7 @@ public final class CouiBrowserUiEnhancer {
                     cardRect.set(0.75f, 0.75f, w - 0.75f, h - 0.75f);
                     boolean realBlur = (blurController != null && blurController.isBlurActive());
                     if (realBlur) {
-                        bgPaint.setColor(isDark ? 0xD6222224 : 0xDCF8FAFC);
+                        bgPaint.setColor(isDark ? 0xC6202024 : 0xC4FFFFFF);
                     } else {
                         bgPaint.setColor(isDark ? 0xF0222224 : 0xF5F8F9FB);
                     }
