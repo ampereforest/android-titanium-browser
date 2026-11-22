@@ -183,4 +183,8 @@ if (content::WebContents::HasLiveWebContentsForBrowserContext(profile)) { return
 sed -i 's/|| mSupportedProfileType == SupportedProfileType.REGULAR) {/|| mSupportedProfileType == SupportedProfileType.REGULAR || mSupportedProfileType == SupportedProfileType.MIXED) {/' chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
 sed -i 's/|| mSupportedProfileType == SupportedProfileType.OFF_THE_RECORD) {/|| mSupportedProfileType == SupportedProfileType.OFF_THE_RECORD || mSupportedProfileType == SupportedProfileType.MIXED) {/' chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java
 
+# ColorOS 17 (COUI 17) Liquid Glass Navigation Bar, Surfaces & Repository URL (https://github.com/ampereforest/android-titanium-browser)
+mkdir -p chrome/android/java/src/org/chromium/chrome/browser/coui
+cp $SCRIPT_DIR/coui/java/org/chromium/chrome/browser/coui/CouiBrowserUiEnhancer.java chrome/android/java/src/org/chromium/chrome/browser/coui/CouiBrowserUiEnhancer.java
+
 export PATCHED=1

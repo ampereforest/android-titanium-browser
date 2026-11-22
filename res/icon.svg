@@ -1,16 +1,18 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180">
   <defs>
-    <clipPath id="disc"><circle cx="256" cy="256" r="208"/></clipPath>
+    <linearGradient id="cosBg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#012EFF"/>
+      <stop offset="50%" stop-color="#001EE0"/>
+      <stop offset="100%" stop-color="#010EC2"/>
+    </linearGradient>
+    <linearGradient id="cosDome" x1="20%" y1="15%" x2="80%" y2="85%">
+      <stop offset="0%" stop-color="#C8F6FF"/>
+      <stop offset="55%" stop-color="#62C8FF"/>
+      <stop offset="100%" stop-color="#0A84FF"/>
+    </linearGradient>
   </defs>
-  <g transform="translate(256 256) scale(1) translate(-256 -256)">
-    <g clip-path="url(#disc)">
-      <rect x="-500" y="-500" width="1512" height="1512" fill="#1c1c31"/>
-    </g>
-    <g id="motif">
-      <ellipse cx="256" cy="256" rx="156" ry="78" fill="none" stroke="#50507a" stroke-width="12" transform="rotate(-30 256 256)"/>
-      <circle cx="256" cy="256" r="94.5" fill="#23233b" stroke="#ffffff" stroke-width="19"/>
-      <circle cx="391" cy="178" r="36" fill="#9393bf"/>
-      <circle cx="121" cy="334" r="36" fill="#9393bf"/>
-    </g>
-  </g>
+  <rect width="180" height="180" rx="40" fill="url(#cosBg)"/>
+  <ellipse cx="90" cy="90" rx="54" ry="22" transform="rotate(-35 90 90)" fill="#FFFFFF"/>
+  <circle cx="90" cy="90" r="46" fill="url(#cosDome)"/>
+  <path d="M126,56 A46,46 0 0,1 56,126 A52,38 -35 0,0 126,56 Z" fill="#0066EE" fill-opacity="0.72"/>
 </svg>

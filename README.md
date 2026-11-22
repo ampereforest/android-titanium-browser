@@ -1,14 +1,19 @@
-# Titanium Browser for Android
+# Titanium Browser for Android (ColorOS 17 / COUI Edition)
 
-[![Stars](https://img.shields.io/github/stars/jqssun/android-titanium-browser?label=Stars&logo=GitHub)](https://github.com/jqssun/android-titanium-browser)
-[![GitHub](https://img.shields.io/github/downloads/jqssun/android-titanium-browser/total?label=GitHub&logo=GitHub)](https://github.com/jqssun/android-titanium-browser/releases)
-[![license](https://img.shields.io/badge/License-GPLv2-blue.svg)](https://github.com/jqssun/android-titanium-browser/blob/main/LICENSE)
-[![build](https://img.shields.io/github/actions/workflow/status/jqssun/android-titanium-browser/build.yml)](https://github.com/jqssun/android-titanium-browser/actions/workflows/build.yml)
-[![release](https://img.shields.io/github/v/release/jqssun/android-titanium-browser)](https://github.com/jqssun/android-titanium-browser/releases)
+[![Stars](https://img.shields.io/github/stars/ampereforest/android-titanium-browser?label=Stars&logo=GitHub)](https://github.com/ampereforest/android-titanium-browser)
+[![GitHub](https://img.shields.io/github/downloads/ampereforest/android-titanium-browser/total?label=GitHub&logo=GitHub)](https://github.com/ampereforest/android-titanium-browser/releases)
+[![license](https://img.shields.io/badge/License-GPLv2-blue.svg)](https://github.com/ampereforest/android-titanium-browser/blob/main/LICENSE)
+[![build](https://img.shields.io/github/actions/workflow/status/ampereforest/android-titanium-browser/build.yml)](https://github.com/ampereforest/android-titanium-browser/actions/workflows/build.yml)
+[![release](https://img.shields.io/github/v/release/ampereforest/android-titanium-browser)](https://github.com/ampereforest/android-titanium-browser/releases)
 
-A secure and fully open-source, Chromium-based web browser with support for extensions, based on [Vanadium](https://github.com/GrapheneOS/Vanadium) by [GrapheneOS](https://github.com/GrapheneOS). This project was formerly known as [Helium Browser for Android](https://github.com/jqssun/android-helium-browser) but was later renamed to avoid branding confusion. To maintain a fast and native experience for everyone, advanced features are modularized into [**Titanium Extension for Android**](https://github.com/jqssun/android-titanium-extension).
+A secure and fully open-source, Chromium-based web browser with support for extensions, based on [Vanadium](https://github.com/GrapheneOS/Vanadium) by [GrapheneOS](https://github.com/GrapheneOS) and customized with **ColorOS 17 (COUI 17) Liquid Glass navigation, surfaces, haptics, and authentic ColorOS Browser Normal & Flux monochrome adaptive icons**.
 
-For the latest builds, see [**Releases**](https://github.com/jqssun/android-titanium-browser/releases/latest). You can also update between GitHub and Google Play releases seamlessly.
+### ColorOS 17 (COUI 17) Enhancements (`coui/java/org/chromium/chrome/browser/coui/CouiBrowserUiEnhancer.java`)
+- **ColorOS 17 Liquid Glass Floating Bottom Navigation Bar (`COUIBottomFloatingNavigationBar` + `LiquidGlassTabBar` Droplet Lens):** `56dp` floating capsule (`28dp` corner radius, `16dp` outside margins, `TYPE_FRAMEWORK_BOTTOM_BAR` frosted glass material with `ColorDodge`/`Overlay` + `Luminosity` dual blend layers, `TYPE_FRAMEWORK_CAPSULE_3` dual-lobe `30°/210°` specular rim, `SpotLightType.OpaqueMedium2` touch spotlight, and an interactive refractive Liquid Glass droplet indicator with `380ms` `OvershootInterpolator(1.1f)` volume-preserving liquid stretch, slide-to-select, and ColorOS ROM haptic `302`).
+- **ColorOS 17 Surfaces & About Repository Binding:** Inverted background hierarchy (`#F0F1F3` light / `#000000` AMOLED dark canvas with `#FFFFFF` / `#1C1C1E` cards) and in-app repository reference (`https://github.com/ampereforest/android-titanium-browser`).
+- **1:1 ColorOS Browser Normal & Flux Monochrome Icons:** Authentic ColorOS Browser planet-with-ring adaptive icon (`res/icon.svg`) and 3-tier Flux `<monochrome>` vector (`res/drawable/themed_app_icon.xml`).
+
+For the latest builds, see [**Releases**](https://github.com/ampereforest/android-titanium-browser/releases/latest).
 
 [<img height="48" alt="Get it on Google Play" src="https://jqssun.github.io/images/badges/google-play-store.svg">](https://play.google.com/store/apps/details?id=io.github.jqssun.helium)
 [<img height="48" alt="Get it on GitHub" src="https://jqssun.github.io/images/badges/github.svg">](https://github.com/jqssun/android-titanium-browser/releases/latest)
