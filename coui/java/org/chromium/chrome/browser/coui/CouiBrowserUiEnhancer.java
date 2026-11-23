@@ -38,6 +38,9 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
+import android.text.Spannable;
+import android.text.Spanned;
+import android.text.style.ForegroundColorSpan;
 import android.util.AttributeSet;
 import android.util.DisplayMetrics;
 import android.util.Log;
@@ -59,6 +62,7 @@ import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.view.animation.DecelerateInterpolator;
+import android.view.animation.Interpolator;
 import android.view.animation.OvershootInterpolator;
 import android.widget.CompoundButton;
 import android.widget.EditText;
@@ -66,6 +70,8 @@ import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ListView;
+import android.widget.RadioButton;
 import android.widget.RelativeLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -139,6 +145,24 @@ public final class CouiBrowserUiEnhancer {
     private static final int ID_TOOLBAR_HAIRLINE = 0x7f010d74;
     private static final int ID_TOOLBAR_BOTTOM_HAIRLINE = 0x7f010d6e;
     private static final int ID_TAB_SWITCHER_HOLDER = 0x7f010cd7;
+
+    // Round 12: New Tab Page (NTP) & Search Engine Settings resource IDs
+    private static final int ID_NTP_CONTENT = 0x7f0108a6;
+    private static final int ID_NTP_SCROLLVIEW = 0x7f0108bb;
+    private static final int ID_FEED_STREAM_RV = 0x7f01052c;
+    private static final int ID_NTP_SEARCH_BOX_BG = 0x7f010b07;
+    private static final int ID_NTP_SEARCH_BOX_CONTAINER = 0x7f010b08;
+    private static final int ID_NTP_SEARCH_BOX_TEXT = 0x7f010b0d;
+    private static final int ID_NTP_MV_TILES_CONTAINER = 0x7f010845;
+    private static final int ID_NTP_MV_TILES_LAYOUT = 0x7f010846;
+    private static final int ID_NTP_TILE_ICON_BG = 0x7f010d3b;
+    private static final int ID_NTP_TILE_TITLE = 0x7f010d3c;
+    private static final int ID_SE_RADIO_BUTTON = 0x7f010a53;
+    private static final int ID_SE_NAME = 0x7f01084a;
+    private static final int ID_SE_URL = 0x7f010ddc;
+    private static final int ID_SE_CARD_CONTAINER = 0x7f010307;
+    private static final String SETTINGS_OBSERVER_TAG = "coui_settings_frag_observer";
+    private static final String RADIO_TAG = "coui_radio_styled";
 
     // Chromium native menu item IDs dispatched via ChromeTabbedActivity.R2(int, boolean, Bundle, Lpo9)
     private static final int MENU_NEW_TAB = 0x7f01087b;
@@ -373,6 +397,303 @@ public final class CouiBrowserUiEnhancer {
         } catch (Throwable ignored) {}
     }
 
+    // =========================================================================
+    // Round 12: Smali hooks for BrandedColorScheme, StatusBar contrast, and
+    //           Echo-Music directional auto-hide of top & bottom Liquid Glass bars
+    // =========================================================================
+
+    /**
+     * Smali hook (Lula.b / ThemeUtils.getBrandedColorScheme):
+     * Neutralizes website <meta name="theme-color"> dark/light overrides so URL emphasis spans
+     * and omnibox icons ALWAYS match our Light/Dark Liquid Glass pill (0 = LIGHT_BRANDED_THEME
+     * with dark text on light glass; 1 = DARK_BRANDED_THEME with light text on dark glass).
+     * Fixes white-on-white URL text on keybox.tryigit.dev & github.com in Light & Dark modes.
+     */
+    public static int getBrandedColorScheme(Context ctx) {
+        try {
+            if (ctx != null && isDarkMode(ctx)) {
+                return 1; // DARK_BRANDED_THEME -> crisp white domain + subtle light path
+            }
+        } catch (Throwable ignored) {}
+        return 0; // LIGHT_BRANDED_THEME -> crisp dark domain + subtle grey path
+    }
+
+    /**
+     * Smali hook (Lz2f.h / StatusBarColorController.setStatusBarColor):
+     * Prevents dark website theme-color from flipping status bar icons white on our light glass
+     * header (and vice versa in Dark Mode) by pinning the luminance-evaluated status bar color
+     * to our Light (#FFECEDF0) / Dark (#FF101012) header tint for ChromeTabbedActivity.
+     */
+    public static int overrideStatusBarColor(Activity activity, int color) {
+        try {
+            if (activity != null && isTabbedBrowser(activity)) {
+                clearEdgeToEdgeStatusBarPaint(activity);
+                return isDarkMode(activity) ? 0xFF101012 : 0xFFECEDF0;
+            }
+        } catch (Throwable ignored) {}
+        return color;
+    }
+
+    /**
+     * Smali hook (Lw05.m / EdgeToEdgeSystemBarColorHelper):
+     * Keeps EdgeToEdgeBaseLayout's status bar fill paint (field C) 100% transparent on the tabbed
+     * browser so edge-to-edge SurfaceControl blur behind the status bar is never occluded, while
+     * Lw05.m still uses Ld71.r (from overrideStatusBarColor) to set APPEARANCE_LIGHT_STATUS_BARS.
+     */
+    public static int overrideEdgeToEdgeStatusBarFill(Window window, int color) {
+        try {
+            if (window != null && isTabbedBrowser(window.getContext())) {
+                return Color.TRANSPARENT;
+            }
+        } catch (Throwable ignored) {}
+        return color;
+    }
+
+    /**
+     * Smali hook (Law1.x / BrowserControlsManager.notifyControlOffsetChanged):
+     * Receives Chromium's live compositor scroll offset (0 at top down to -topControlsHeight)
+     * and drives Echo-Music directional auto-hide for BOTH top header and bottom 3-piece nav bar.
+     */
+    public static void onBrowserControlsOffset(View controlContainer, int topControlOffsetPx) {
+        if (controlContainer == null) return;
+        try {
+            Activity act = unwrapActivity(controlContainer.getContext());
+            if (act == null) return;
+            ViewGroup content = act.findViewById(android.R.id.content);
+            if (content == null) return;
+            View nav = content.findViewWithTag(NAV_TAG);
+            if (nav instanceof CouiLiquidGlassNavBar) {
+                ((CouiLiquidGlassNavBar) nav).onChromiumControlsOffset(controlContainer, topControlOffsetPx);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /** Ensures Tab Switcher container (ID_TAB_SWITCHER_HOLDER) clears the status bar by 1.30x. */
+    private static void applyTabSwitcherTopInset(Activity activity, View root, boolean isDark) {
+        if (activity == null || root == null) return;
+        View tabHolder = root.findViewById(ID_TAB_SWITCHER_HOLDER);
+        if (tabHolder == null) return;
+        int sb = sTopInsetPx > 0 ? sTopInsetPx : systemStatusBarHeight(activity);
+        if (sb <= 0) sb = dp(activity, 36);
+        int wantTop = Math.round(sb * 1.30f);
+        if (tabHolder.getPaddingTop() != wantTop) {
+            tabHolder.setPadding(tabHolder.getPaddingLeft(), wantTop,
+                    tabHolder.getPaddingRight(), tabHolder.getPaddingBottom());
+            if (tabHolder instanceof ViewGroup) {
+                ((ViewGroup) tabHolder).setClipToPadding(false);
+            }
+        }
+        boolean visible = (tabHolder.getVisibility() == View.VISIBLE
+                && tabHolder instanceof ViewGroup && ((ViewGroup) tabHolder).getChildCount() > 0);
+        int wantBg = isDark ? 0xFF000000 : 0xFFF0F1F3;
+        if (visible) {
+            Drawable bg = tabHolder.getBackground();
+            if (!(bg instanceof ColorDrawable) || ((ColorDrawable) bg).getColor() != wantBg) {
+                tabHolder.setBackgroundColor(wantBg);
+            }
+        } else if (tabHolder.getBackground() != null) {
+            tabHolder.setBackground(null);
+        }
+    }
+
+    /**
+     * Styles the New Tab Page (NTP) to match Titanium Settings 1:1 ColorOS 17 COUI neutral tokens:
+     * Canvas #F0F1F3 (Light) / #000000 (Dark), Search pill & Shortcuts card #FFFFFF / #1C1C1E,
+     * Tile icon circles #F0F1F3 / #2C2C2E — zero Material You lavender/blue tint.
+     */
+    private static void styleNtpColors(Activity activity, View root, boolean isDark) {
+        if (activity == null || root == null) return;
+        View ntpContent = root.findViewById(ID_NTP_CONTENT);
+        View ntpScroll = root.findViewById(ID_NTP_SCROLLVIEW);
+        View feedRv = root.findViewById(ID_FEED_STREAM_RV);
+        if (ntpContent == null && ntpScroll == null && feedRv == null) return;
+
+        int canvasCol = isDark ? 0xFF000000 : 0xFFF0F1F3;
+        int cardCol = isDark ? 0xFF1C1C1E : 0xFFFFFFFF;
+        int tileCircleCol = isDark ? 0xFF2C2C2E : 0xFFF0F1F3;
+        int titleCol = isDark ? 0xE6FFFFFF : 0xFF191919;
+        int hintCol = isDark ? 0x8AFFFFFF : 0xFF7F7F7F;
+        int strokeCol = isDark ? 0x1AFFFFFF : 0x0D000000;
+
+        View[] canvases = {ntpContent, ntpScroll, feedRv};
+        for (View v : canvases) {
+            if (v == null) continue;
+            Drawable bg = v.getBackground();
+            if (!(bg instanceof ColorDrawable) || ((ColorDrawable) bg).getColor() != canvasCol) {
+                v.setBackgroundColor(canvasCol);
+            }
+            // Also paint immediate parent NativePage container if it holds a Material tonal fill
+            ViewParent p = v.getParent();
+            if (p instanceof View) {
+                View pv = (View) p;
+                int pid = pv.getId();
+                if (pid != android.R.id.content && pid != ID_EDGE_TO_EDGE_BASE) {
+                    Drawable pbg = pv.getBackground();
+                    if (pbg != null && (!(pbg instanceof ColorDrawable) || ((ColorDrawable) pbg).getColor() != canvasCol)) {
+                        pv.setBackgroundColor(canvasCol);
+                    }
+                }
+            }
+        }
+
+        // Clean pure #FFFFFF / #1C1C1E NTP search pill (zero inner Material You lavender/grey box!)
+        View searchBox = ntpContent != null ? ntpContent.findViewById(ID_SEARCH_BOX) : root.findViewById(ID_SEARCH_BOX);
+        View searchBoxBg = ntpContent != null ? ntpContent.findViewById(ID_NTP_SEARCH_BOX_BG) : root.findViewById(ID_NTP_SEARCH_BOX_BG);
+        View searchBoxCont = ntpContent != null ? ntpContent.findViewById(ID_NTP_SEARCH_BOX_CONTAINER) : root.findViewById(ID_NTP_SEARCH_BOX_CONTAINER);
+        View searchBoxShadow = ntpContent != null ? ntpContent.findViewById(0x7f010b0b) : root.findViewById(0x7f010b0b);
+        if (searchBoxCont != null && searchBoxCont.getBackground() != null) {
+            searchBoxCont.setBackground(null);
+        }
+        if (searchBoxShadow != null && searchBoxShadow.getBackground() != null) {
+            searchBoxShadow.setBackground(null);
+        }
+        if (searchBoxBg != null && searchBoxBg != searchBox && searchBoxBg.getBackground() != null) {
+            searchBoxBg.setBackground(null);
+        }
+        String pillTag = "coui_ntp_pill2_" + (isDark ? "d" : "l");
+        View pillTarget = (searchBox != null) ? searchBox : searchBoxBg;
+        if (pillTarget != null) {
+            if (pillTarget instanceof ViewGroup) {
+                stripNtpSearchBoxChildrenBg((ViewGroup) pillTarget);
+            }
+            if (!pillTag.equals(pillTarget.getTag())) {
+                GradientDrawable pill = new GradientDrawable();
+                pill.setShape(GradientDrawable.RECTANGLE);
+                pill.setCornerRadius(dpF(activity, 28f));
+                pill.setColor(cardCol);
+                pill.setStroke(Math.max(1, dp(activity, 0.75f)), strokeCol);
+                pillTarget.setBackground(pill);
+                pillTarget.setTag(pillTag);
+            }
+        }
+        View searchText = ntpContent != null ? ntpContent.findViewById(ID_NTP_SEARCH_BOX_TEXT) : root.findViewById(ID_NTP_SEARCH_BOX_TEXT);
+        if (searchText instanceof TextView) {
+            TextView tv = (TextView) searchText;
+            if (tv.getCurrentHintTextColor() != hintCol) tv.setHintTextColor(hintCol);
+            if (tv.getCurrentTextColor() != titleCol) tv.setTextColor(titleCol);
+        }
+        if (searchBox instanceof ViewGroup) {
+            tintNtpSearchIcons((ViewGroup) searchBox, isDark ? 0xB3FFFFFF : 0xFF686D74);
+        }
+
+        // Most Visited shortcuts card: 20dp squircle #FFFFFF / #1C1C1E with neutral #F0F1F3 / #2C2C2E icon circles
+        View mvCont = ntpContent != null ? ntpContent.findViewById(ID_NTP_MV_TILES_CONTAINER) : root.findViewById(ID_NTP_MV_TILES_CONTAINER);
+        if (mvCont != null) {
+            String mvTag = "coui_ntp_mv_" + (isDark ? "d" : "l");
+            if (!mvTag.equals(mvCont.getTag())) {
+                GradientDrawable card = new GradientDrawable();
+                card.setShape(GradientDrawable.RECTANGLE);
+                card.setCornerRadius(dpF(activity, 20f));
+                card.setColor(cardCol);
+                mvCont.setBackground(card);
+                mvCont.setTag(mvTag);
+            }
+            if (mvCont instanceof ViewGroup) {
+                styleNtpTilesRecursive((ViewGroup) mvCont, activity, isDark, tileCircleCol, titleCol);
+            }
+        }
+    }
+
+    private static void stripNtpSearchBoxChildrenBg(ViewGroup vg) {
+        for (int i = 0; i < vg.getChildCount(); i++) {
+            View c = vg.getChildAt(i);
+            Drawable bg = c.getBackground();
+            if (bg != null && !(bg instanceof RippleDrawable)) {
+                c.setBackground(null);
+            }
+            if (c instanceof ViewGroup) {
+                stripNtpSearchBoxChildrenBg((ViewGroup) c);
+            }
+        }
+    }
+
+    private static void tintNtpSearchIcons(ViewGroup vg, int tint) {
+        for (int i = 0; i < vg.getChildCount(); i++) {
+            View c = vg.getChildAt(i);
+            if (c instanceof ImageView) {
+                ((ImageView) c).setColorFilter(tint, PorterDuff.Mode.SRC_IN);
+            } else if (c instanceof ViewGroup) {
+                tintNtpSearchIcons((ViewGroup) c, tint);
+            }
+        }
+    }
+
+    private static void styleNtpTilesRecursive(ViewGroup vg, Context ctx, boolean isDark, int circleCol, int titleCol) {
+        String circleTag = "coui_tile_bg_" + (isDark ? "d" : "l");
+        for (int i = 0; i < vg.getChildCount(); i++) {
+            View c = vg.getChildAt(i);
+            int id = c.getId();
+            if (id == ID_NTP_TILE_ICON_BG) {
+                if (!circleTag.equals(c.getTag())) {
+                    GradientDrawable gd = new GradientDrawable();
+                    gd.setShape(GradientDrawable.OVAL);
+                    gd.setColor(circleCol);
+                    c.setBackground(gd);
+                    if (c instanceof ImageView) {
+                        ((ImageView) c).setImageDrawable(null);
+                    }
+                    c.setTag(circleTag);
+                }
+            } else if (id == ID_NTP_TILE_TITLE && c instanceof TextView) {
+                TextView tv = (TextView) c;
+                if (tv.getCurrentTextColor() != titleCol) {
+                    tv.setTextColor(titleCol);
+                }
+            } else if (c instanceof ViewGroup) {
+                styleNtpTilesRecursive((ViewGroup) c, ctx, isDark, circleCol, titleCol);
+            }
+        }
+    }
+
+    /** Enforces crisp Light/Dark status bar icon contrast + transparent status bar on every frame/navigation. */
+    private static void enforceBrowserStatusBarAppearance(Activity activity, boolean isDark, boolean isFullscreen) {
+        if (activity == null || isFullscreen) return;
+        Window w = activity.getWindow();
+        if (w == null) return;
+        if (w.getStatusBarColor() != Color.TRANSPARENT) {
+            w.setStatusBarColor(Color.TRANSPARENT);
+        }
+        clearEdgeToEdgeStatusBarPaint(activity);
+        if (Build.VERSION.SDK_INT >= 30) {
+            WindowInsetsController wic = w.getInsetsController();
+            if (wic != null) {
+                int flag = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS;
+                int want = isDark ? 0 : flag;
+                if ((wic.getSystemBarsAppearance() & flag) != want) {
+                    wic.setSystemBarsAppearance(want, flag);
+                }
+            }
+        }
+    }
+
+    /** Ensures no white-on-white or dark-on-dark UrlEmphasisColorSpan ever renders inside url_bar. */
+    private static void enforceUrlBarSpanContrast(TextView tv, boolean isDark) {
+        CharSequence cs = tv.getText();
+        if (!(cs instanceof Spannable) || cs.length() == 0) return;
+        Spannable sp = (Spannable) cs;
+        ForegroundColorSpan[] spans = sp.getSpans(0, sp.length(), ForegroundColorSpan.class);
+        if (spans == null || spans.length == 0) return;
+        int primaryCol = isDark ? 0xF2FFFFFF : 0xFF191919;
+        int secondaryCol = isDark ? 0x99FFFFFF : 0xFF757575;
+        for (ForegroundColorSpan s : spans) {
+            int col = s.getForegroundColor();
+            float lum = (0.299f * Color.red(col) + 0.587f * Color.green(col) + 0.114f * Color.blue(col)) / 255f;
+            boolean badContrast = (!isDark && lum > 0.52f) || (isDark && lum < 0.45f);
+            if (badContrast) {
+                int start = sp.getSpanStart(s);
+                int end = sp.getSpanEnd(s);
+                int flags = sp.getSpanFlags(s);
+                if (start >= 0 && end > start) {
+                    // Preserve domain-vs-scheme/path hierarchy: higher-alpha spans are primary host, lower are dimmed
+                    int alpha = Color.alpha(col);
+                    int replacement = (alpha >= 220) ? primaryCol : secondaryCol;
+                    sp.removeSpan(s);
+                    sp.setSpan(new ForegroundColorSpan(replacement), start, end, flags);
+                }
+            }
+        }
+    }
+
     /** Hooked into ChromeTabbedActivity.onResume(). */
     public static void attachToBrowser(final Activity activity) {
         if (activity == null) return;
@@ -583,22 +904,22 @@ public final class CouiBrowserUiEnhancer {
             boolean focused = (urlBar != null && urlBar.hasFocus());
             boolean glassHeaderActive = realBlur && !focused && !inTabSwitcher && !isFullscreen;
 
+            // Round 12: Enforce status bar icon contrast (fixes white icons on keybox.tryigit.dev),
+            // apply 1.30x statusBarHeight top inset to Tab Switcher, and style NTP to 1:1 COUI tokens.
+            enforceBrowserStatusBarAppearance(activity, isDark, isFullscreen);
+            applyTabSwitcherTopInset(activity, root, isDark);
+            styleNtpColors(activity, root, isDark);
+
             // 1. Full-width Frosted Liquid Glass Top Header Backdrop on ID_CONTROL_CONTAINER
-            //    (matches titanium-address-bar.jpg structure upgraded to full-width frosted Liquid Glass!)
+            //    (Round 12: no longer hard-pinned at y=0; CouiLiquidGlassNavBar drives Echo-Music auto-hide!)
             View controlContainer = root.findViewById(ID_CONTROL_CONTAINER);
             CouiTopHeaderGlassDrawable headerGlass = null;
             if (controlContainer != null) {
-                // Round 11: the glass lives in a dedicated child view at index 0 (behind toolbar_container).
-                // Chromium repeatedly resets control_container's own background (setBackground(null) / its
-                // LayerDrawable), which made the Round 10 header tint flicker and forced 12Hz re-installs.
                 headerGlass = ensureHeaderGlassView(activity, controlContainer, isDark, glassHeaderActive);
                 if (controlContainer.getBackground() != null) {
                     controlContainer.setBackground(null);
                 }
                 if (!inTabSwitcher && !isFullscreen) {
-                    if (controlContainer.getTranslationY() < -0.5f) {
-                        controlContainer.setTranslationY(0f);
-                    }
                     if (controlContainer.getVisibility() == View.INVISIBLE) {
                         controlContainer.setVisibility(View.VISIBLE);
                     }
@@ -609,14 +930,12 @@ public final class CouiBrowserUiEnhancer {
                 if (toolbarContainer.getBackground() != null) {
                     toolbarContainer.setBackground(null);
                 }
-                // Round 11: toolbar_container carries the status bar inset as top padding (the compositor's
-                // toolbar texture is captured from this view, so it stays pixel-aligned with the live view).
                 int wantTop = extraTopControlsHeight(controlContainer != null ? controlContainer : toolbarContainer);
                 if (toolbarContainer.getPaddingTop() != wantTop) {
                     toolbarContainer.setPadding(toolbarContainer.getPaddingLeft(), wantTop,
                             toolbarContainer.getPaddingRight(), toolbarContainer.getPaddingBottom());
                 }
-                if (!inTabSwitcher && !isFullscreen && toolbarContainer.getTranslationY() < -0.5f) {
+                if (!inTabSwitcher && !isFullscreen && Math.abs(toolbarContainer.getTranslationY()) > 0.5f) {
                     toolbarContainer.setTranslationY(0f);
                 }
             }
@@ -626,7 +945,7 @@ public final class CouiBrowserUiEnhancer {
                     toolbar.setBackground(null);
                 }
                 if (!inTabSwitcher && !isFullscreen) {
-                    if (toolbar.getTranslationY() < -0.5f) {
+                    if (Math.abs(toolbar.getTranslationY()) > 0.5f) {
                         toolbar.setTranslationY(0f);
                     }
                     if (toolbar.getVisibility() == View.INVISIBLE) {
@@ -897,6 +1216,7 @@ public final class CouiBrowserUiEnhancer {
                     int wantHint = isDark ? 0x80FFFFFF : 0xFF7F7F7F;
                     if (tv.getCurrentTextColor() != wantCol) tv.setTextColor(wantCol);
                     if (tv.getCurrentHintTextColor() != wantHint) tv.setHintTextColor(wantHint);
+                    enforceUrlBarSpanContrast(tv, isDark);
                     if ((tv.getGravity() & Gravity.VERTICAL_GRAVITY_MASK) != Gravity.CENTER_VERTICAL) {
                         tv.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
                     }
@@ -1010,6 +1330,14 @@ public final class CouiBrowserUiEnhancer {
             int w = b.width();
             int h = b.height();
             if (w <= 0 || h <= 0) return;
+
+            // Round 12: On NTP (pillAlpha == 0), paint seamless COUI Settings canvas (#F0F1F3 / #000000)
+            // with zero contrasting top band or hairline so the entire NTP canvas matches Settings 1:1.
+            if (pillAlpha <= 0.01f) {
+                fillPaint.setColor(isDark ? 0xFF000000 : 0xFFF0F1F3);
+                canvas.drawRect(b, fillPaint);
+                return;
+            }
 
             // Luminous frost over the 16dp hardware blur (same tint across status bar + header: no seam).
             if (realBlur) {
@@ -1292,10 +1620,62 @@ public final class CouiBrowserUiEnhancer {
                         styleSettingsTree(activity, content, dark, canvasColor);
                     }
                 }, 140);
+                installSettingsFragmentObserver(activity);
             }
         } catch (Throwable t) {
             Log.w(TAG, "attachToSettings failed", t);
         }
+    }
+
+    /**
+     * Round 12: Lightweight throttled observer on SettingsActivity's FragmentContainerView so
+     * sub-screens that use ListView (such as SearchEngineSettings) or dynamically resize AppBarLayout
+     * automatically receive COUI top inset clearance, overscroll, radio styling, dividers, and chevrons
+     * without requiring onResume().
+     */
+    private static void installSettingsFragmentObserver(final Activity activity) {
+        final View fragContent = activity.findViewById(ID_SETTINGS_CONTENT);
+        if (fragContent == null || SETTINGS_OBSERVER_TAG.equals(fragContent.getTag())) return;
+        fragContent.setTag(SETTINGS_OBSERVER_TAG);
+        final long[] lastSync = {0L};
+        fragContent.getViewTreeObserver().addOnPreDrawListener(new ViewTreeObserver.OnPreDrawListener() {
+            @Override
+            public boolean onPreDraw() {
+                long now = SystemClock.uptimeMillis();
+                if (now - lastSync[0] < 90L) return true;
+                lastSync[0] = now;
+                try {
+                    boolean dark = isDarkMode(activity);
+                    int canvasColor = dark ? 0xFF000000 : 0xFFF0F1F3;
+                    styleSettingsTree(activity, fragContent, dark, canvasColor);
+                    View root = activity.findViewById(ID_SETTINGS_ACTIVITY);
+                    if (root != null) {
+                        View blur = root.findViewWithTag(SETTINGS_TOP_BLUR_TAG);
+                        if (blur instanceof CouiTopProgressiveBlurView) {
+                            ((CouiTopProgressiveBlurView) blur).syncHeight();
+                        }
+                    }
+                    // Keep Settings toolbar back button & title styling synced across fragment transitions
+                    View tb = activity.findViewById(ID_SETTINGS_TOOLBAR);
+                    if (tb instanceof ViewGroup) {
+                        ViewGroup tbg = (ViewGroup) tb;
+                        for (int i = 0; i < tbg.getChildCount(); i++) {
+                            View c = tbg.getChildAt(i);
+                            if (c instanceof ImageButton && c.getVisibility() != View.INVISIBLE) {
+                                c.setVisibility(View.INVISIBLE);
+                                c.setAlpha(0f);
+                                c.setClickable(false);
+                            } else if (c instanceof TextView && !(c instanceof EditText)) {
+                                ((TextView) c).setTextColor(dark ? 0xE6FFFFFF : 0xFF191919);
+                            } else if (c.getClass().getName().contains("ActionMenuView") && c.getVisibility() != View.GONE) {
+                                c.setVisibility(View.GONE);
+                            }
+                        }
+                    }
+                } catch (Throwable ignored) {}
+                return true;
+            }
+        });
     }
 
     private static void styleSettingsWindow(Activity activity, boolean dark, int canvasColor) {
@@ -1677,6 +2057,9 @@ public final class CouiBrowserUiEnhancer {
                     stylePreferenceItemView(rv.getChildAt(i), dark, null);
                 }
             }
+        } else if (view instanceof ListView) {
+            styleSettingsListView(activity, (ListView) view, dark, canvasColor);
+            return;
         }
         if (view instanceof ViewGroup) {
             ViewGroup vg = (ViewGroup) view;
@@ -1684,6 +2067,256 @@ public final class CouiBrowserUiEnhancer {
                 styleSettingsTree(activity, vg.getChildAt(i), dark, canvasColor);
             }
         }
+    }
+
+    /**
+     * Round 12: Styles Settings sub-screens backed by ListView (notably SearchEngineSettings):
+     * - Applies exact top clearance below AppBarLayout (+8dp) with clipToPadding=false so item 0
+     *   ("Google") is 100% visible below "<- Search engine" and never clipped behind the header.
+     * - Styles RadioButtons to authentic ColorOS 17 #0080FF/#1A8CFF circles + ROM haptic 302.
+     * - Styles names/URLs to COUI 16sp Medium / 13sp muted typography, draws 16dp-inset 1dp
+     *   card dividers between fused items, and draws a native COUI '>' chevron on action rows
+     *   ("Manage search engines and site search").
+     */
+    private static void styleSettingsListView(Activity activity, ListView lv, boolean dark, int canvasColor) {
+        Context ctx = lv.getContext();
+        Activity act = (activity != null) ? activity : unwrapActivity(ctx);
+        Drawable bg = lv.getBackground();
+        if (!(bg instanceof ColorDrawable) || ((ColorDrawable) bg).getColor() != canvasColor) {
+            lv.setBackgroundColor(canvasColor);
+        }
+        if (lv.getDivider() != null || lv.getDividerHeight() != 0) {
+            lv.setDivider(null);
+            lv.setDividerHeight(0);
+        }
+        lv.setSelector(new ColorDrawable(Color.TRANSPARENT));
+        lv.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        lv.setClipToPadding(false);
+        attachCouiOverscroll(lv);
+
+        int appBarBot = (act != null) ? getSettingsAppBarBottom(act) : dp(ctx, 96);
+        int topPad = appBarBot + dp(ctx, 8);
+        int botPad = dp(ctx, 28);
+        int oldTop = lv.getPaddingTop();
+        if (lv.getPaddingLeft() != 0 || lv.getPaddingRight() != 0
+                || Math.abs(oldTop - topPad) > dp(ctx, 2)
+                || lv.getPaddingBottom() < botPad) {
+            lv.setPadding(0, topPad, 0, botPad);
+            if (oldTop < dp(ctx, 40) && topPad > oldTop) {
+                try {
+                    lv.setSelectionFromTop(0, 0);
+                } catch (Throwable ignored) {}
+            }
+        }
+
+        int childCount = lv.getChildCount();
+        for (int i = 0; i < childCount; i++) {
+            View row = lv.getChildAt(i);
+            if (row == null || row.getVisibility() != View.VISIBLE) continue;
+
+            View cardTarget = row.findViewById(ID_SE_CARD_CONTAINER);
+            if (cardTarget == null) cardTarget = row;
+            // Remove extra outer row horizontal padding so Ldc3's 16dp card margin aligns 1:1 with Settings main
+            if (row != cardTarget && (row.getPaddingLeft() != 0 || row.getPaddingRight() != 0)) {
+                row.setPadding(0, row.getPaddingTop(), 0, row.getPaddingBottom());
+            }
+
+            RadioButton rb = row.findViewById(ID_SE_RADIO_BUTTON);
+            TextView nameTv = row.findViewById(ID_SE_NAME);
+            TextView urlTv = row.findViewById(ID_SE_URL);
+
+            if (rb != null) {
+                styleCouiRadioButton(rb, dark);
+            }
+            if (nameTv != null) {
+                nameTv.setTextColor(dark ? 0xE6FFFFFF : 0xFF191919);
+                nameTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f);
+                nameTv.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            }
+            if (urlTv != null) {
+                urlTv.setTextColor(dark ? 0x73FFFFFF : 0xFF8C8C8C);
+                urlTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+                urlTv.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+            }
+
+            // Style action rows without RadioButton (e.g., "Manage search engines and site search"):
+            // hide Chromium's stock Material ImageView chevron so only our single crisp COUI '>' renders!
+            boolean isActionRow = (rb == null && row.isClickable());
+            if (isActionRow) {
+                styleActionRowTextRecursive(row, dark);
+            }
+
+            // Draw 16dp-inset 1dp COUI divider between ANY two adjacent fused rows inside the same card
+            boolean hasDividerBelow = false;
+            if (i + 1 < childCount) {
+                View next = lv.getChildAt(i + 1);
+                if (next != null && next.getVisibility() == View.VISIBLE) {
+                    int gap = next.getTop() - row.getBottom();
+                    if (gap <= dp(ctx, 3)) {
+                        hasDividerBelow = true;
+                    }
+                }
+            }
+
+            Drawable curFg = cardTarget.getForeground();
+            if (curFg instanceof CouiListRowOverlayDrawable) {
+                ((CouiListRowOverlayDrawable) curFg).update(dark, hasDividerBelow, isActionRow);
+            } else {
+                cardTarget.setForeground(new CouiListRowOverlayDrawable(ctx, dark, hasDividerBelow, isActionRow));
+            }
+        }
+    }
+
+    private static void styleActionRowTextRecursive(View v, boolean dark) {
+        if (v instanceof TextView) {
+            TextView tv = (TextView) v;
+            tv.setTextColor(dark ? 0xE6FFFFFF : 0xFF191919);
+            tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f);
+            tv.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        } else if (v instanceof ImageView) {
+            // Hide Chromium's built-in chevron arrow to eliminate double '>>' chevron
+            if (v.getVisibility() != View.INVISIBLE) {
+                v.setVisibility(View.INVISIBLE);
+            }
+        } else if (v instanceof ViewGroup) {
+            ViewGroup vg = (ViewGroup) v;
+            for (int i = 0; i < vg.getChildCount(); i++) {
+                styleActionRowTextRecursive(vg.getChildAt(i), dark);
+            }
+        }
+    }
+
+    private static void styleCouiRadioButton(final RadioButton rb, boolean dark) {
+        if (rb == null) return;
+        String wantTag = RADIO_TAG + "_" + (dark ? "d" : "l");
+        if (wantTag.equals(rb.getTag())) return;
+        rb.setTag(wantTag);
+        rb.setButtonTintList(null);
+        rb.setButtonDrawable(new CouiRadioDrawable(rb.getContext(), dark));
+    }
+
+    /** Crisp 1:1 ColorOS 17 Radio Button drawable (#0080FF/#1A8CFF checked + white center dot). */
+    private static final class CouiRadioDrawable extends Drawable {
+        private final Context ctx;
+        private final boolean isDark;
+        private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final int sizePx;
+        private boolean checked = false;
+
+        CouiRadioDrawable(Context ctx, boolean isDark) {
+            this.ctx = ctx;
+            this.isDark = isDark;
+            this.sizePx = dp(ctx, 22);
+        }
+
+        @Override public int getIntrinsicWidth() { return sizePx; }
+        @Override public int getIntrinsicHeight() { return sizePx; }
+        @Override public boolean isStateful() { return true; }
+
+        @Override
+        protected boolean onStateChange(int[] state) {
+            boolean nowChecked = false;
+            if (state != null) {
+                for (int s : state) {
+                    if (s == android.R.attr.state_checked) {
+                        nowChecked = true;
+                        break;
+                    }
+                }
+            }
+            if (nowChecked != checked) {
+                checked = nowChecked;
+                invalidateSelf();
+                return true;
+            }
+            return false;
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            Rect b = getBounds();
+            float cx = b.exactCenterX();
+            float cy = b.exactCenterY();
+            float r = dpF(ctx, 9.5f);
+            if (checked) {
+                p.setStyle(Paint.Style.FILL);
+                p.setColor(isDark ? 0xFF1A8CFF : 0xFF0080FF);
+                canvas.drawCircle(cx, cy, r, p);
+                p.setColor(0xFFFFFFFF);
+                canvas.drawCircle(cx, cy, dpF(ctx, 3.8f), p);
+            } else {
+                p.setStyle(Paint.Style.STROKE);
+                p.setStrokeWidth(dpF(ctx, 1.6f));
+                p.setColor(isDark ? 0xFF48484A : 0xFFC4C7CC);
+                canvas.drawCircle(cx, cy, r - dpF(ctx, 0.8f), p);
+            }
+        }
+
+        @Override public void setAlpha(int alpha) {}
+        @Override public void setColorFilter(ColorFilter cf) {}
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+    }
+
+    /** Draws 16dp-inset 1dp COUI card divider and/or right '>' chevron as a lightweight row foreground. */
+    private static final class CouiListRowOverlayDrawable extends Drawable {
+        private final Context ctx;
+        private boolean isDark;
+        private boolean drawDivider;
+        private boolean drawChevron;
+        private final Paint divPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint chevPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path chevPath = new Path();
+
+        CouiListRowOverlayDrawable(Context ctx, boolean isDark, boolean drawDivider, boolean drawChevron) {
+            this.ctx = ctx;
+            this.isDark = isDark;
+            this.drawDivider = drawDivider;
+            this.drawChevron = drawChevron;
+            divPaint.setStyle(Paint.Style.FILL);
+            chevPaint.setStyle(Paint.Style.STROKE);
+            chevPaint.setStrokeCap(Paint.Cap.ROUND);
+            chevPaint.setStrokeJoin(Paint.Join.ROUND);
+            chevPaint.setStrokeWidth(dpF(ctx, 1.85f));
+        }
+
+        void update(boolean dark, boolean divider, boolean chevron) {
+            if (this.isDark != dark || this.drawDivider != divider || this.drawChevron != chevron) {
+                this.isDark = dark;
+                this.drawDivider = divider;
+                this.drawChevron = chevron;
+                invalidateSelf();
+            }
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            Rect b = getBounds();
+            if (b.isEmpty()) return;
+            if (drawDivider) {
+                float inset = dpF(ctx, 16f);
+                float h = Math.max(1f, dpF(ctx, 0.75f));
+                divPaint.setColor(isDark ? 0x24FFFFFF : 0x14000000);
+                if (b.right - inset > b.left + inset) {
+                    canvas.drawRect(b.left + inset, b.bottom - h, b.right - inset, b.bottom, divPaint);
+                }
+            }
+            if (drawChevron) {
+                chevPaint.setColor(isDark ? 0x66FFFFFF : 0xFFB2B2B2);
+                float cy = b.exactCenterY();
+                float tipX = b.right - dpF(ctx, 18f);
+                float baseX = tipX - dpF(ctx, 4.8f);
+                float halfH = dpF(ctx, 4.8f);
+                chevPath.rewind();
+                chevPath.moveTo(baseX, cy - halfH);
+                chevPath.lineTo(tipX, cy);
+                chevPath.lineTo(baseX, cy + halfH);
+                canvas.drawPath(chevPath, chevPaint);
+            }
+        }
+
+        @Override public void setAlpha(int alpha) {}
+        @Override public void setColorFilter(ColorFilter cf) {}
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
     }
 
     /**
@@ -2796,6 +3429,142 @@ public final class CouiBrowserUiEnhancer {
         private View cachedControlContainer;
         private long lastToolbarSyncMs = 0L;
 
+        // Round 12: Echo-Music directional auto-hide state machine (50dp hysteresis, spring stiffness=500 damping=0.9)
+        private boolean barsHiddenByScroll = false;
+        private int lastRawControlsOffset = 0;
+        private float accumulatedScrollPx = 0f;
+        private float currentTopTransY = 0f;
+        private float currentBotTransY = 0f;
+        private ValueAnimator barsAutoHideAnim;
+
+        /** Exact underdamped spring curve matching Compose spring(dampingRatio = 0.9f, stiffness = 500f). */
+        private static final Interpolator ECHO_SPRING_INTERPOLATOR = new Interpolator() {
+            @Override
+            public float getInterpolation(float input) {
+                if (input <= 0f) return 0f;
+                if (input >= 1f) return 1f;
+                double t = input * 0.34; // 340ms horizon where exp(-0.9 * sqrt(500) * 0.34) < 0.001
+                double wn = Math.sqrt(500.0);
+                double zeta = 0.9;
+                double wd = wn * Math.sqrt(1.0 - zeta * zeta);
+                double env = Math.exp(-zeta * wn * t);
+                double val = 1.0 - env * (Math.cos(wd * t) + (zeta / Math.sqrt(1.0 - zeta * zeta)) * Math.sin(wd * t));
+                return (float) val;
+            }
+        };
+
+        private boolean shouldForceShowBars(View decor) {
+            if (decor == null) return true;
+            if (flyoutOverlay != null && flyoutOverlay.isOpen()) return true;
+            View tabHolder = decor.findViewById(ID_TAB_SWITCHER_HOLDER);
+            if (tabHolder != null && tabHolder.getVisibility() == View.VISIBLE
+                    && tabHolder instanceof ViewGroup && ((ViewGroup) tabHolder).getChildCount() > 0) {
+                return true;
+            }
+            View urlBar = decor.findViewById(ID_URL_BAR);
+            if (urlBar != null && urlBar.hasFocus()) return true;
+            View ntp = decor.findViewById(ID_NTP_CONTENT);
+            if (ntp != null && ntp.isShown()) return true;
+            return false;
+        }
+
+        /** Called on every Chromium BrowserControlsManager.notifyControlOffsetChanged() scroll frame. */
+        void onChromiumControlsOffset(View controlContainer, int rawTopOffsetPx) {
+            cachedControlContainer = controlContainer;
+            Window w = activity.getWindow();
+            View decor = (w != null) ? w.getDecorView() : null;
+
+            if (shouldForceShowBars(decor)) {
+                accumulatedScrollPx = 0f;
+                lastRawControlsOffset = rawTopOffsetPx;
+                setBarsHiddenByScroll(false);
+                if (Math.abs(controlContainer.getTranslationY() - currentTopTransY) > 0.5f) {
+                    controlContainer.setTranslationY(currentTopTransY);
+                }
+                return;
+            }
+
+            // Always show immediately when scrolled back to the top of the page
+            if (rawTopOffsetPx >= -2) {
+                accumulatedScrollPx = 0f;
+                lastRawControlsOffset = rawTopOffsetPx;
+                setBarsHiddenByScroll(false);
+                if (Math.abs(controlContainer.getTranslationY() - currentTopTransY) > 0.5f) {
+                    controlContainer.setTranslationY(currentTopTransY);
+                }
+                return;
+            }
+
+            int delta = rawTopOffsetPx - lastRawControlsOffset;
+            lastRawControlsOffset = rawTopOffsetPx;
+
+            // Echo-Music directional 50dp hysteresis (clamped to 42% of header height so it always triggers cleanly
+            // within Chromium's topControlsHeight scroll range, resetting immediately on direction change).
+            int headerH = controlContainer.getHeight();
+            float threshold = Math.min(dpF(activity, 50f),
+                    Math.max(dpF(activity, 24f), headerH > 0 ? headerH * 0.42f : dpF(activity, 40f)));
+
+            if (delta < 0) {
+                if (accumulatedScrollPx > 0f) accumulatedScrollPx = 0f;
+                accumulatedScrollPx += delta; // negative = scrolling down
+                if (!barsHiddenByScroll && (accumulatedScrollPx <= -threshold
+                        || (headerH > 0 && rawTopOffsetPx <= -(headerH - dp(activity, 8))))) {
+                    accumulatedScrollPx = 0f;
+                    setBarsHiddenByScroll(true);
+                }
+            } else if (delta > 0) {
+                if (accumulatedScrollPx < 0f) accumulatedScrollPx = 0f;
+                accumulatedScrollPx += delta; // positive = scrolling up
+                if (barsHiddenByScroll && (accumulatedScrollPx >= threshold || rawTopOffsetPx >= -dp(activity, 12))) {
+                    accumulatedScrollPx = 0f;
+                    setBarsHiddenByScroll(false);
+                }
+            }
+
+            // Keep control_container locked strictly to our smooth animated offset (zero half-offset status-bar collision!)
+            if (Math.abs(controlContainer.getTranslationY() - currentTopTransY) > 0.5f) {
+                controlContainer.setTranslationY(currentTopTransY);
+            }
+        }
+
+        void setBarsHiddenByScroll(boolean hide) {
+            if (this.barsHiddenByScroll == hide) return;
+            this.barsHiddenByScroll = hide;
+            if (hide && flyoutOverlay != null && flyoutOverlay.isOpen()) {
+                flyoutOverlay.dismiss();
+            }
+            final View cc = cachedControlContainer;
+            int headerH = (cc != null && cc.getHeight() > 0) ? cc.getHeight() : dp(activity, 108);
+            int navH = (getHeight() > 0) ? getHeight() : (dp(activity, 58 + 10) + currentBottomPadPx);
+
+            final float startTop = currentTopTransY;
+            final float endTop = hide ? -(headerH + dpF(activity, 12f)) : 0f;
+            final float startBot = currentBotTransY;
+            // Exact Echo-Music slide distance: barHeight + bottomInset + 8.dp (+ shadow clearance)
+            final float endBot = hide ? (navH + dpF(activity, 16f)) : 0f;
+
+            if (barsAutoHideAnim != null && barsAutoHideAnim.isRunning()) {
+                barsAutoHideAnim.cancel();
+            }
+            barsAutoHideAnim = ValueAnimator.ofFloat(0f, 1f);
+            barsAutoHideAnim.setDuration(hide ? 280L : 340L);
+            barsAutoHideAnim.setInterpolator(hide ? new DecelerateInterpolator(1.6f) : ECHO_SPRING_INTERPOLATOR);
+            barsAutoHideAnim.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+                @Override
+                public void onAnimationUpdate(ValueAnimator anim) {
+                    float f = (Float) anim.getAnimatedValue();
+                    currentTopTransY = startTop + (endTop - startTop) * f;
+                    currentBotTransY = startBot + (endBot - startBot) * f;
+                    if (cachedControlContainer != null) {
+                        cachedControlContainer.setTranslationY(currentTopTransY);
+                    }
+                    setTranslationY(currentBotTransY);
+                    blurController.update();
+                }
+            });
+            barsAutoHideAnim.start();
+        }
+
         private final ViewTreeObserver.OnPreDrawListener preDrawListener = new ViewTreeObserver.OnPreDrawListener() {
             @Override
             public boolean onPreDraw() {
@@ -2803,19 +3572,24 @@ public final class CouiBrowserUiEnhancer {
                 if (w != null) {
                     View decor = w.getDecorView();
                     long now = SystemClock.uptimeMillis();
-                    // Throttle view-tree styling walks to <= 12Hz while keeping pin-at-y=0 & SurfaceControl instant!
                     if (cachedControlContainer == null || !cachedControlContainer.isAttachedToWindow()) {
                         cachedControlContainer = decor.findViewById(ID_CONTROL_CONTAINER);
                         if (cachedControlContainer != null) {
-                            // Full-bleed edge-to-edge frosted Liquid Glass header (cornerDp = -1f -> 0px square, 10dp blur)
                             blurController.setSlot(SurfaceViewBlurController.SLOT_ADDRESS_BAR, cachedControlContainer, -1f, 16);
                         }
                     }
-                    if (cachedControlContainer != null && cachedControlContainer.getTranslationY() < -0.5f) {
-                        // Instant pin during scroll without walking the whole decor tree!
-                        styleTopAddressBarGlass(activity, decor, isDark, blurController.isBlurActive());
-                        lastToolbarSyncMs = now;
-                    } else if (now - lastToolbarSyncMs >= 80L) {
+                    if (barsHiddenByScroll && shouldForceShowBars(decor)) {
+                        setBarsHiddenByScroll(false);
+                    }
+                    // Keep top control_container strictly at our smooth animated position (prevents Chromium overlap jitter)
+                    if (cachedControlContainer != null
+                            && Math.abs(cachedControlContainer.getTranslationY() - currentTopTransY) > 0.5f) {
+                        cachedControlContainer.setTranslationY(currentTopTransY);
+                    }
+                    if (Math.abs(getTranslationY() - currentBotTransY) > 0.5f) {
+                        setTranslationY(currentBotTransY);
+                    }
+                    if (now - lastToolbarSyncMs >= 80L) {
                         lastToolbarSyncMs = now;
                         hideTopToolbarButtons(decor);
                         styleTopAddressBarGlass(activity, decor, isDark, blurController.isBlurActive());

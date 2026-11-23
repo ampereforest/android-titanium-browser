@@ -25,7 +25,16 @@ against (`chromium-ChromePublic.apk-default-807807974`). Re-derive them for any 
 | `ToolbarControlContainer.k()I` (top controls height) | `return A + m() + CouiBrowserUiEnhancer.extraTopControlsHeight(this)` (`.registers 3`) | Keeps page content starting below the taller glass header at scroll-top. |
 | `ToolbarPhone.m0(Canvas, long)` ("drawLocationBar") | `Lon8;->draw` → `nop`; `Canvas.clipRect(FFFF)` → `nop` | Chromium's flat location-bar background was the opaque rectangle behind the URL text, and its clip cut the 40dp glass capsule down to a 28dp band. Chromium re-animates its alpha, so `setAlpha(0)` alone never held. |
 | `ToolbarPhone.dispatchDraw(Canvas)` | `s0` `ColorDrawable.draw` → `nop` | The page `theme-color` toolbar fill painted an opaque band over the frosted header. |
-| `Lzdh.d` (TopToolbarSceneLayer binder → `updateToolbarLayer` JNI) | before the JNI call: background colour `v8`, URL-bar colour `v10` and `show_shadow` `v15` set to `0` | The compositor painted the toolbar colour and hairline behind the pinned glass header. The pixel-aligned toolbar texture is kept. |
+| `Lzdh.d` (TopToolbarSceneLayer binder → `updateToolbarLayer` JNI) | before the JNI call: background colour `v8`, URL-bar colour `v10`, `show_shadow` `v15` (`const/4`) and compositor toolbar `visible` `v16` (`const/16`) set to `0` | Prevents Chromium's compositor from painting an opaque toolbar fill, hairline, or duplicate bitmap behind our animated Android Liquid Glass header during Echo-Music auto-hide. |
+
+## Round 12 — theme-color isolation, Echo-Music auto-hide, Tab Switcher inset, Search Engine & NTP COUI parity
+
+| Target | Patch | Why |
+|---|---|---|
+| `Lula.b(Context, int, boolean)` (`ThemeUtils.getBrandedColorScheme`) | return `CouiBrowserUiEnhancer.getBrandedColorScheme(p0)` (`0` Light / `1` Dark) | Stops dark website `<meta name="theme-color">` (e.g. `keybox.tryigit.dev`, `github.com`) from emitting white `UrlEmphasisColorSpan`s on our Light frosted glass pill. |
+| `Lz2f.h(Lw05, Activity, int, boolean)` (`StatusBarColorController.setStatusBarColor`) | `p2 = CouiBrowserUiEnhancer.overrideStatusBarColor(p1, p2)` (`0xFFECEDF0` Light / `0xFF101012` Dark for `ChromeTabbedActivity`) | Keeps `APPEARANCE_LIGHT_STATUS_BARS` locked strictly to Light/Dark mode instead of flipping status bar icons white on dark websites. |
+| `Lw05.m()` (`EdgeToEdgeSystemBarColorHelper`) | before `Lkhf.I0(v4)`: `v4 = CouiBrowserUiEnhancer.overrideEdgeToEdgeStatusBarFill(v0, v4)` (`0` for `ChromeTabbedActivity`) | Keeps `EdgeToEdgeBaseLayout.C` transparent so edge-to-edge hardware blur behind the status bar stays unobstructed while `Ld71.r` still drives crisp status bar icon contrast. |
+| `Law1.x()` (`BrowserControlsManager.notifyControlOffsetChanged`) | `nop` direct `control_container.setTranslationY(F)`; at `:cond_24` call `CouiBrowserUiEnhancer.onBrowserControlsOffset(v3, v4)` | Feeds every compositor scroll frame into the Echo-Music `50.dp` directional auto-hide state machine (`spring(0.9f, 500f)` restore) so BOTH top header and bottom 3-piece Liquid Glass nav bar glide offscreen/back in unison with zero status-bar collision. |
 
 ## Runtime notes (Java side)
 
