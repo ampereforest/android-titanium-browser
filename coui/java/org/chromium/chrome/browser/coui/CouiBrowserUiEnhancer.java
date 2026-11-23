@@ -146,6 +146,35 @@ public final class CouiBrowserUiEnhancer {
     private static final int ID_TOOLBAR_BOTTOM_HAIRLINE = 0x7f010d6e;
     private static final int ID_TAB_SWITCHER_HOLDER = 0x7f010cd7;
 
+    // Round 13: Tab Switcher (Hub + TabListRecyclerView + TabGridView) resource IDs
+    private static final int ID_HUB_MAIN_CONTAINER = 0x7f010658;
+    private static final int ID_HUB_PANE_HOST = 0x7f01065a;
+    private static final int ID_HUB_PANE_HOST_CONTAINER = 0x7f01065b;
+    private static final int ID_HUB_TOOLBAR = 0x7f01065c;
+    private static final int ID_HUB_NEW_TAB_BUTTON_WRAP = 0x7f010d6c;
+    private static final int ID_HUB_NEW_TAB_BUTTON = 0x7f010d6d;
+    private static final int ID_HUB_NEW_TAB_TEXT_BTN = 0x7f010d6b;
+    private static final int ID_HUB_PANE_SWITCHER = 0x7f01094f;
+    private static final int ID_HUB_PANE_SWITCHER_CARD = 0x7f010950;
+    private static final int ID_TAB_LIST_CONTAINER = 0x7f010ca1;
+    private static final int ID_TAB_LIST_RECYCLER_VIEW = 0x7f010cb2;
+    private static final int ID_TAB_CARD_VIEW = 0x7f010257;
+    private static final int ID_TAB_CARD_SECONDARY = 0x7f010259;
+    private static final int ID_TAB_CARD_BORDER = 0x7f01019b;
+    private static final int ID_TAB_CARD_CONSTRAINT = 0x7f01030e;
+    private static final int ID_TAB_TITLE = 0x7f010cda;
+    private static final int ID_TAB_THUMBNAIL = 0x7f010cd9;
+    private static final int ID_TAB_CLOSE_BTN = 0x7f010076;
+
+    private static final ColorStateList CSL_TAB_LIGHT_UNFOCUSED = ColorStateList.valueOf(0xFFFFFFFF);
+    private static final ColorStateList CSL_TAB_LIGHT_FOCUSED = ColorStateList.valueOf(0xFF191919);
+    private static final ColorStateList CSL_TAB_DARK_UNFOCUSED = ColorStateList.valueOf(0xFF1C1C1E);
+    private static final ColorStateList CSL_TAB_DARK_FOCUSED = ColorStateList.valueOf(0xFFF0F1F3);
+    private static final ColorStateList CSL_CLOSE_LIGHT_UNFOCUSED = ColorStateList.valueOf(0xFF555555);
+    private static final ColorStateList CSL_CLOSE_LIGHT_FOCUSED = ColorStateList.valueOf(0xFFFFFFFF);
+    private static final ColorStateList CSL_CLOSE_DARK_UNFOCUSED = ColorStateList.valueOf(0xB3FFFFFF);
+    private static final ColorStateList CSL_CLOSE_DARK_FOCUSED = ColorStateList.valueOf(0xFF191919);
+
     // Round 12: New Tab Page (NTP) & Search Engine Settings resource IDs
     private static final int ID_NTP_CONTENT = 0x7f0108a6;
     private static final int ID_NTP_SCROLLVIEW = 0x7f0108bb;
@@ -468,7 +497,12 @@ public final class CouiBrowserUiEnhancer {
         } catch (Throwable ignored) {}
     }
 
-    /** Ensures Tab Switcher container (ID_TAB_SWITCHER_HOLDER) clears the status bar by 1.30x. */
+    /**
+     * Round 12 + Round 13: Ensures Tab Switcher container (ID_TAB_SWITCHER_HOLDER) clears the status bar
+     * by 1.30x AND restyles the entire Tab Switcher (Hub toolbar, '+' button, '[count | grid]' switcher,
+     * 'Search your tabs' bar, and focused vs. unfocused tab cards) to 100% ColorOS 17 COUI neutral tokens
+     * with ZERO Material You blue tint.
+     */
     private static void applyTabSwitcherTopInset(Activity activity, View root, boolean isDark) {
         if (activity == null || root == null) return;
         View tabHolder = root.findViewById(ID_TAB_SWITCHER_HOLDER);
@@ -491,9 +525,432 @@ public final class CouiBrowserUiEnhancer {
             if (!(bg instanceof ColorDrawable) || ((ColorDrawable) bg).getColor() != wantBg) {
                 tabHolder.setBackgroundColor(wantBg);
             }
+            styleTabSwitcherColors(activity, tabHolder, isDark);
         } else if (tabHolder.getBackground() != null) {
             tabHolder.setBackground(null);
         }
+    }
+
+    /**
+     * Round 13: Eliminates all blue Material You dynamic colors inside the Tab Switcher:
+     * 1. Seamless #F0F1F3 (Light) / #000000 (Dark) canvas across Hub containers, toolbar & search_box_background.
+     * 2. Top-left '+' button: COUI 14dp squircle (#FFFFFF / #1C1C1E) with crisp #191919 / #E6FFFFFF '+' icon.
+     * 3. Top-center '[count | grid]' pane switcher: neutral #E3E4E7 / #1C1C1E track, #FFFFFF / #2C2C2E active pill,
+     *    and #191919 / #E6FFFFFF icons (preserving TabSwitcherDrawable stroke+number via setTintList).
+     * 4. 'Search your tabs' pill: COUI 24dp neutral #E3E4E7 / #1C1C1E pill with #7F7F7F / #8AFFFFFF hint & lens.
+     * 5. Tab grid cards (res/GV.xml):
+     *    - Light Mode: Unfocused = #FFFFFF card & header, #191919 title, #555555 'X';
+     *                  Focused/active = #191919 dark charcoal/black card & header, #FFFFFF title & 'X'.
+     *    - Dark Mode:  Unfocused = #1C1C1E dark grey card & header, #E6FFFFFF title, #B3FFFFFF 'X';
+     *                  Focused/active = #F0F1F3 bright COUI neutral card & header, #191919 title & 'X'.
+     */
+    static void styleTabSwitcherColors(Activity activity, View tabHolder, boolean isDark) {
+        if (activity == null || tabHolder == null) return;
+        int canvasCol = isDark ? 0xFF000000 : 0xFFF0F1F3;
+        int[] canvasIds = {
+            ID_HUB_MAIN_CONTAINER,
+            ID_HUB_PANE_HOST_CONTAINER,
+            ID_HUB_PANE_HOST,
+            ID_HUB_TOOLBAR,
+            ID_TAB_LIST_CONTAINER,
+            ID_TAB_LIST_RECYCLER_VIEW
+        };
+        for (int id : canvasIds) {
+            View v = tabHolder.findViewById(id);
+            if (v != null) {
+                v.setBackgroundTintList(null);
+                Drawable bg = v.getBackground();
+                if (!(bg instanceof ColorDrawable) || ((ColorDrawable) bg).getColor() != canvasCol) {
+                    v.setBackgroundColor(canvasCol);
+                }
+            }
+        }
+
+        View hubToolbar = tabHolder.findViewById(ID_HUB_TOOLBAR);
+        if (hubToolbar instanceof ViewGroup) {
+            ViewGroup htg = (ViewGroup) hubToolbar;
+            for (int i = 0; i < htg.getChildCount(); i++) {
+                View c = htg.getChildAt(i);
+                if (c instanceof ViewGroup && c.getId() == View.NO_ID) {
+                    c.setBackgroundTintList(null);
+                    Drawable bg = c.getBackground();
+                    if (bg != null && (!(bg instanceof ColorDrawable) || ((ColorDrawable) bg).getColor() != canvasCol)) {
+                        c.setBackgroundColor(canvasCol);
+                    }
+                }
+            }
+            // Clear the hardcoded @android:color/white search_box_background (0x7f010b07) inside hub_toolbar
+            View sbBg = hubToolbar.findViewById(ID_NTP_SEARCH_BOX_BG);
+            if (sbBg != null) {
+                sbBg.setBackgroundTintList(null);
+                Drawable bg = sbBg.getBackground();
+                if (!(bg instanceof ColorDrawable) || ((ColorDrawable) bg).getColor() != canvasCol) {
+                    sbBg.setBackgroundColor(canvasCol);
+                }
+            }
+
+            // 1. Top-left '+' New Tab button (0x7f010d6d ChromeImageButton AND 0x7f010d6b Button inside 0x7f010d6c)
+            //    In res/Io.xml, HubToolbarView uses 0x7f010d6b (Button with compound drawable '+' and tinted
+            //    rounded-square background) or 0x7f010d6d (ChromeImageButton). Style BOTH with a clean COUI
+            //    14dp squircle (#FFFFFF / #1C1C1E) and crisp #191919 / #E6FFFFFF '+' icon!
+            View newTabWrap = hubToolbar.findViewById(ID_HUB_NEW_TAB_BUTTON_WRAP);
+            if (newTabWrap != null) {
+                newTabWrap.setBackgroundTintList(null);
+                if (newTabWrap.getBackground() != null) {
+                    newTabWrap.setBackground(null);
+                }
+            }
+            int plusIconCol = isDark ? 0xE6FFFFFF : 0xFF191919;
+            ColorStateList plusIconCsl = ColorStateList.valueOf(plusIconCol);
+            View[] newTabBtns = {
+                hubToolbar.findViewById(ID_HUB_NEW_TAB_BUTTON),
+                hubToolbar.findViewById(ID_HUB_NEW_TAB_TEXT_BTN)
+            };
+            for (View btn : newTabBtns) {
+                if (btn == null) continue;
+                String btnTag = "coui_hub_add3_" + (isDark ? "d" : "l");
+                btn.setBackgroundTintList(null);
+                if (!btnTag.equals(btn.getTag())) {
+                    GradientDrawable gd = new GradientDrawable();
+                    gd.setShape(GradientDrawable.RECTANGLE);
+                    gd.setCornerRadius(dpF(activity, 14f));
+                    gd.setColor(isDark ? 0xFF1C1C1E : 0xFFFFFFFF);
+                    gd.setStroke(Math.max(1, dp(activity, 0.75f)), isDark ? 0x1AFFFFFF : 0x12000000);
+                    btn.setBackground(gd);
+                    btn.setTag(btnTag);
+                }
+                if (btn instanceof ImageView) {
+                    ImageView iv = (ImageView) btn;
+                    iv.clearColorFilter();
+                    iv.setImageTintList(null);
+                    Drawable curD = iv.getDrawable();
+                    if (curD instanceof CouiPlusIconDrawable) {
+                        ((CouiPlusIconDrawable) curD).setDarkMode(isDark);
+                    } else {
+                        iv.setImageDrawable(new CouiPlusIconDrawable(activity, isDark));
+                        iv.setScaleType(ImageView.ScaleType.CENTER);
+                    }
+                } else if (btn instanceof TextView) {
+                    TextView tv = (TextView) btn;
+                    tv.setTextColor(plusIconCol);
+                    tv.setCompoundDrawableTintList(plusIconCsl);
+                    Drawable[] cds = tv.getCompoundDrawables();
+                    if (cds != null) {
+                        for (Drawable d : cds) {
+                            if (d != null) {
+                                d.setTintList(plusIconCsl);
+                                d.setColorFilter(plusIconCol, PorterDuff.Mode.SRC_IN);
+                            }
+                        }
+                    }
+                    Drawable[] cdrs = tv.getCompoundDrawablesRelative();
+                    if (cdrs != null) {
+                        for (Drawable d : cdrs) {
+                            if (d != null) {
+                                d.setTintList(plusIconCsl);
+                                d.setColorFilter(plusIconCol, PorterDuff.Mode.SRC_IN);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. Top-center '[count | grid]' pane switcher pill (0x7f010950 + 0x7f01094f TabLayout)
+            View switcherCard = hubToolbar.findViewById(ID_HUB_PANE_SWITCHER_CARD);
+            View switcherTab = hubToolbar.findViewById(ID_HUB_PANE_SWITCHER);
+            int trackCol = isDark ? 0xFF1C1C1E : 0xFFE3E4E7;
+            int indCol = isDark ? 0xFF2C2C2E : 0xFFFFFFFF;
+            int iconCol = isDark ? 0xE6FFFFFF : 0xFF191919;
+            ColorStateList iconCsl = ColorStateList.valueOf(iconCol);
+            ColorStateList indCsl = ColorStateList.valueOf(indCol);
+
+            View outerTrack = (switcherCard != null) ? switcherCard : switcherTab;
+            if (outerTrack != null) {
+                String trackTag = "coui_hub_sw_" + (isDark ? "d" : "l");
+                outerTrack.setBackgroundTintList(null);
+                if (!trackTag.equals(outerTrack.getTag())) {
+                    GradientDrawable gd = new GradientDrawable();
+                    gd.setShape(GradientDrawable.RECTANGLE);
+                    gd.setCornerRadius(dpF(activity, 16f));
+                    gd.setColor(trackCol);
+                    outerTrack.setBackground(gd);
+                    outerTrack.setTag(trackTag);
+                }
+            }
+            if (switcherCard != null && switcherTab != null) {
+                switcherTab.setBackgroundTintList(null);
+                if (switcherTab.getBackground() != null) {
+                    switcherTab.setBackground(null);
+                }
+            }
+            if (switcherTab != null) {
+                try {
+                    Method setIndCol = switcherTab.getClass().getMethod("setSelectedTabIndicatorColor", int.class);
+                    setIndCol.invoke(switcherTab, indCol);
+                } catch (Throwable ignored) {}
+                try {
+                    Method getInd = switcherTab.getClass().getMethod("getTabSelectedIndicator");
+                    Object indObj = getInd.invoke(switcherTab);
+                    if (indObj instanceof Drawable) {
+                        Drawable ind = (Drawable) indObj;
+                        ind.setTintList(indCsl);
+                        ind.setColorFilter(indCol, PorterDuff.Mode.SRC_IN);
+                    }
+                } catch (Throwable ignored) {}
+                try {
+                    Method setIconTint = switcherTab.getClass().getMethod("setTabIconTint", ColorStateList.class);
+                    setIconTint.invoke(switcherTab, iconCsl);
+                } catch (Throwable ignored) {}
+                if (switcherTab instanceof ViewGroup) {
+                    stylePaneSwitcherChildrenRecursive((ViewGroup) switcherTab, iconCsl, indCsl);
+                }
+            }
+
+            // 3. 'Search your tabs' pill (0x7f010b05 + 0x7f010b0d)
+            View searchBox = hubToolbar.findViewById(ID_SEARCH_BOX);
+            if (searchBox != null) {
+                searchBox.setBackgroundTintList(null);
+                styleCouiSearchBox(searchBox, isDark);
+                View searchTv = searchBox.findViewById(ID_NTP_SEARCH_BOX_TEXT);
+                if (searchTv instanceof TextView) {
+                    TextView tv = (TextView) searchTv;
+                    int hintCol = isDark ? 0x8AFFFFFF : 0xFF7F7F7F;
+                    tv.setTextColor(isDark ? 0xE6FFFFFF : 0xFF191919);
+                    tv.setHintTextColor(hintCol);
+                }
+            }
+        }
+
+        // Hide any toolbar_bottom_hairline / shadow ImageView inside tabHolder so no 1px divider line
+        // cuts across the top of the tab cards below 'Search your tabs'
+        if (tabHolder instanceof ViewGroup) {
+            hideHairlinesRecursive((ViewGroup) tabHolder);
+        }
+
+        // 4. Tab Grid Cards inside tab_list_recycler_view (0x7f010cb2)
+        View tabRv = tabHolder.findViewById(ID_TAB_LIST_RECYCLER_VIEW);
+        if (tabRv instanceof ViewGroup) {
+            ViewGroup rvg = (ViewGroup) tabRv;
+            int count = rvg.getChildCount();
+            // First pass: check how many cards are detected as focused; if multiple cards exist,
+            // verify each card's focused vs unfocused state from Chromium's incoming tint/text luminance.
+            for (int i = 0; i < count; i++) {
+                View cardItem = rvg.getChildAt(i);
+                if (cardItem != null && cardItem.getVisibility() == View.VISIBLE) {
+                    styleTabGridCardItem(cardItem, isDark);
+                }
+            }
+        }
+    }
+
+    private static void hideHairlinesRecursive(ViewGroup vg) {
+        int maxHairH = dp(vg.getContext(), 6);
+        for (int i = 0; i < vg.getChildCount(); i++) {
+            View c = vg.getChildAt(i);
+            int id = c.getId();
+            boolean isHairline = (id == ID_TOOLBAR_BOTTOM_HAIRLINE || id == ID_TOOLBAR_HAIRLINE)
+                    || (c.getHeight() > 0 && c.getHeight() <= maxHairH && c.getWidth() > dp(vg.getContext(), 200))
+                    || (c instanceof ImageView && id != ID_HUB_NEW_TAB_BUTTON
+                        && (vg.getId() == ID_HUB_TOOLBAR || vg.getId() == ID_HUB_MAIN_CONTAINER
+                            || vg.getId() == ID_HUB_PANE_HOST_CONTAINER || vg.getId() == ID_HUB_PANE_HOST));
+            if (isHairline) {
+                if (c.getAlpha() != 0f) c.setAlpha(0f);
+                if (c.getScaleY() != 0f) c.setScaleY(0f);
+                if (c.getBackground() != null) c.setBackground(null);
+                if (c instanceof ImageView && ((ImageView) c).getDrawable() != null) {
+                    ((ImageView) c).setImageDrawable(null);
+                }
+            } else if (c instanceof ViewGroup && id != ID_TAB_LIST_RECYCLER_VIEW) {
+                hideHairlinesRecursive((ViewGroup) c);
+            }
+        }
+    }
+
+    /** Crisp 1:1 ColorOS 17 '+' vector icon for the Tab Switcher top-left New Tab button. */
+    private static final class CouiPlusIconDrawable extends Drawable {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final int sizePx;
+        private final float armHalfLen;
+        private boolean isDark;
+
+        CouiPlusIconDrawable(Context ctx, boolean isDark) {
+            this.isDark = isDark;
+            this.sizePx = dp(ctx, 22f);
+            this.armHalfLen = dpF(ctx, 7.2f);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStrokeWidth(dpF(ctx, 2.0f));
+        }
+
+        void setDarkMode(boolean dark) {
+            if (this.isDark != dark) {
+                this.isDark = dark;
+                invalidateSelf();
+            }
+        }
+
+        @Override public int getIntrinsicWidth() { return sizePx; }
+        @Override public int getIntrinsicHeight() { return sizePx; }
+
+        @Override
+        public void draw(Canvas canvas) {
+            Rect b = getBounds();
+            float cx = b.exactCenterX();
+            float cy = b.exactCenterY();
+            paint.setColor(isDark ? 0xE6FFFFFF : 0xFF191919);
+            canvas.drawLine(cx - armHalfLen, cy, cx + armHalfLen, cy, paint);
+            canvas.drawLine(cx, cy - armHalfLen, cx, cy + armHalfLen, paint);
+        }
+
+        @Override public void setAlpha(int alpha) { paint.setAlpha(alpha); }
+        @Override public void setColorFilter(ColorFilter cf) {}
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+    }
+
+    private static void stylePaneSwitcherChildrenRecursive(ViewGroup vg, ColorStateList iconCsl, ColorStateList indCsl) {
+        for (int i = 0; i < vg.getChildCount(); i++) {
+            View c = vg.getChildAt(i);
+            if (c.getBackgroundTintList() != null && c.getBackgroundTintList() != indCsl) {
+                c.setBackgroundTintList(indCsl);
+            }
+            if (c instanceof ImageView) {
+                ImageView iv = (ImageView) c;
+                iv.clearColorFilter();
+                iv.setImageTintList(iconCsl);
+                Drawable d = iv.getDrawable();
+                if (d != null) {
+                    d.setTintList(iconCsl);
+                }
+            } else if (c instanceof TextView) {
+                ((TextView) c).setTextColor(iconCsl);
+            } else if (c instanceof ViewGroup) {
+                stylePaneSwitcherChildrenRecursive((ViewGroup) c, iconCsl, indCsl);
+            }
+        }
+    }
+
+    private static float colorLuminance(int color) {
+        return (0.299f * Color.red(color) + 0.587f * Color.green(color) + 0.114f * Color.blue(color)) / 255f;
+    }
+
+    private static void styleTabGridCardItem(View itemView, boolean isDark) {
+        View cardView = itemView.findViewById(ID_TAB_CARD_VIEW);
+        if (cardView == null) return;
+        TextView titleTv = itemView.findViewById(ID_TAB_TITLE);
+        ImageView closeBtn = itemView.findViewById(ID_TAB_CLOSE_BTN);
+        View thumbView = itemView.findViewById(ID_TAB_THUMBNAIL);
+        View borderView = itemView.findViewById(ID_TAB_CARD_BORDER);
+        View secView = itemView.findViewById(ID_TAB_CARD_SECONDARY);
+
+        ColorStateList curTint = cardView.getBackgroundTintList();
+        boolean isOurTint = (curTint == CSL_TAB_LIGHT_UNFOCUSED
+                || curTint == CSL_TAB_LIGHT_FOCUSED
+                || curTint == CSL_TAB_DARK_UNFOCUSED
+                || curTint == CSL_TAB_DARK_FOCUSED);
+
+        boolean isFocused;
+        if (!isOurTint && curTint != null) {
+            // Chromium's TabGridViewBinder just bound or updated this card's selection state!
+            // In Light Mode, Chromium sets selected tab card background to dark blue (#415578, lum ~0.33 < 0.55)
+            // vs unselected light grey-blue (#DCE1EC, lum ~0.88).
+            // In Dark Mode, Chromium sets selected tab card background to bright accent blue (lum > 0.38)
+            // vs unselected dark surface (#282A2F, lum ~0.17).
+            int defCol = curTint.getDefaultColor();
+            float bgLum = colorLuminance(defCol);
+            if (!isDark) {
+                isFocused = (bgLum < 0.55f);
+            } else {
+                isFocused = (bgLum > 0.38f);
+            }
+            cardView.setTag(isFocused ? "coui_tab_focused" : "coui_tab_unfocused");
+        } else if (titleTv != null) {
+            int curTextCol = titleTv.getCurrentTextColor();
+            boolean isOurTextCol = (curTextCol == 0xFF191919 || curTextCol == 0xFFFFFFFF || curTextCol == 0xE6FFFFFF);
+            if (!isOurTextCol) {
+                // Chromium updated title text color on selection change
+                float tLum = colorLuminance(curTextCol);
+                isFocused = !isDark ? (tLum > 0.55f) : (tLum < 0.45f);
+                cardView.setTag(isFocused ? "coui_tab_focused" : "coui_tab_unfocused");
+            } else {
+                isFocused = "coui_tab_focused".equals(cardView.getTag());
+            }
+        } else {
+            isFocused = "coui_tab_focused".equals(cardView.getTag());
+        }
+
+        ColorStateList wantCardCsl = isDark
+                ? (isFocused ? CSL_TAB_DARK_FOCUSED : CSL_TAB_DARK_UNFOCUSED)
+                : (isFocused ? CSL_TAB_LIGHT_FOCUSED : CSL_TAB_LIGHT_UNFOCUSED);
+        int wantTitleCol = isDark
+                ? (isFocused ? 0xFF191919 : 0xE6FFFFFF)
+                : (isFocused ? 0xFFFFFFFF : 0xFF191919);
+        ColorStateList wantCloseCsl = isDark
+                ? (isFocused ? CSL_CLOSE_DARK_FOCUSED : CSL_CLOSE_DARK_UNFOCUSED)
+                : (isFocused ? CSL_CLOSE_LIGHT_FOCUSED : CSL_CLOSE_LIGHT_UNFOCUSED);
+
+        if (cardView.getBackgroundTintList() != wantCardCsl) {
+            cardView.setBackgroundTintList(wantCardCsl);
+        }
+        Drawable cbg = cardView.getBackground();
+        if (cbg != null) {
+            cbg.setTintList(wantCardCsl);
+        }
+        if (borderView != null) {
+            if (borderView.getBackgroundTintList() != wantCardCsl) {
+                borderView.setBackgroundTintList(wantCardCsl);
+            }
+            if (borderView instanceof ImageView) {
+                ImageView biv = (ImageView) borderView;
+                if (biv.getImageTintList() != wantCardCsl) {
+                    biv.setImageTintList(wantCardCsl);
+                }
+            }
+        }
+        if (secView != null && secView.getBackgroundTintList() != wantCardCsl) {
+            secView.setBackgroundTintList(wantCardCsl);
+        }
+        if (titleTv != null && titleTv.getCurrentTextColor() != wantTitleCol) {
+            titleTv.setTextColor(wantTitleCol);
+        }
+        if (closeBtn != null) {
+            closeBtn.clearColorFilter();
+            if (closeBtn.getImageTintList() != wantCloseCsl) {
+                closeBtn.setImageTintList(wantCloseCsl);
+            }
+            Drawable cd = closeBtn.getDrawable();
+            if (cd != null) {
+                cd.setTintList(wantCloseCsl);
+            }
+        }
+        if (thumbView != null) {
+            int thumbPlaceholderCol = isDark
+                    ? (isFocused ? 0xFFE3E4E7 : 0xFF262629)
+                    : (isFocused ? 0xFF28282B : 0xFFF3F4F6);
+            ColorStateList thumbCsl = ColorStateList.valueOf(thumbPlaceholderCol);
+            thumbView.setBackgroundTintList(thumbCsl);
+            // Neutralize any internal blue Paint inside TabThumbnailView when thumbnail is a placeholder
+            neutralizeTabThumbnailBluePaints(thumbView, thumbPlaceholderCol);
+        }
+    }
+
+    private static void neutralizeTabThumbnailBluePaints(View thumbView, int neutralCol) {
+        try {
+            Class<?> cls = thumbView.getClass();
+            for (Field f : cls.getDeclaredFields()) {
+                if (Paint.class.isAssignableFrom(f.getType())) {
+                    f.setAccessible(true);
+                    Object val = f.get(thumbView);
+                    if (val instanceof Paint) {
+                        Paint p = (Paint) val;
+                        int c = p.getColor();
+                        if (Color.alpha(c) > 0 && (Color.blue(c) > Color.red(c) + 10 || Color.blue(c) > Color.green(c) + 10)) {
+                            p.setColor(neutralCol);
+                            thumbView.invalidate();
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
     }
 
     /**
@@ -3429,6 +3886,91 @@ public final class CouiBrowserUiEnhancer {
         private View cachedControlContainer;
         private long lastToolbarSyncMs = 0L;
 
+        // Round 13: Real 120fps RenderNode Gaussian backdrop blur over ID_TAB_SWITCHER_HOLDER
+        // for the 3-piece bottom nav bar AND the Glass Flyout Menu when inside Tab Switcher!
+        private static final float TAB_BLUR_SCALE = 0.5f;
+        private final RenderNode tabBackdropNode = (Build.VERSION.SDK_INT >= 31)
+                ? new RenderNode("coui-tab-switcher-blur") : null;
+        private final int[] tabHolderLoc = new int[2];
+        private final int[] pieceLoc = new int[2];
+        private final Path pieceClipPath = new Path();
+        private boolean inTabSwitcher = false;
+        private boolean isRecordingTabBackdrop = false;
+        private boolean tabBackdropValid = false;
+        private int lastTabBlurW = -1;
+        private int lastTabBlurH = -1;
+
+        boolean isInTabSwitcher() {
+            return inTabSwitcher;
+        }
+
+        private void recordTabSwitcherBackdrop(View tabHolder) {
+            if (Build.VERSION.SDK_INT < 31 || tabBackdropNode == null || isRecordingTabBackdrop || tabHolder == null) {
+                return;
+            }
+            int w = tabHolder.getWidth();
+            int h = tabHolder.getHeight();
+            if (w <= 0 || h <= 0) {
+                tabBackdropValid = false;
+                return;
+            }
+            int rw = Math.max(1, Math.round(w * TAB_BLUR_SCALE));
+            int rh = Math.max(1, Math.round(h * TAB_BLUR_SCALE));
+            isRecordingTabBackdrop = true;
+            try {
+                tabHolder.getLocationInWindow(tabHolderLoc);
+                tabBackdropNode.setPosition(0, 0, rw, rh);
+                Canvas rec = tabBackdropNode.beginRecording(rw, rh);
+                try {
+                    rec.drawColor(isDark ? 0xFF000000 : 0xFFF0F1F3);
+                    rec.scale(TAB_BLUR_SCALE, TAB_BLUR_SCALE);
+                    tabHolder.draw(rec);
+                } finally {
+                    tabBackdropNode.endRecording();
+                }
+                if (rw != lastTabBlurW || rh != lastTabBlurH) {
+                    float blurPx = dpF(activity, 13f) * TAB_BLUR_SCALE;
+                    tabBackdropNode.setRenderEffect(
+                            RenderEffect.createBlurEffect(blurPx, blurPx, Shader.TileMode.CLAMP));
+                    lastTabBlurW = rw;
+                    lastTabBlurH = rh;
+                }
+                tabBackdropValid = true;
+                leftCircleView.invalidate();
+                centerPillView.invalidate();
+                rightCircleView.invalidate();
+                if (flyoutOverlay != null && flyoutOverlay.isOpen()) {
+                    flyoutOverlay.invalidateCard();
+                }
+            } catch (Throwable t) {
+                tabBackdropValid = false;
+            } finally {
+                isRecordingTabBackdrop = false;
+            }
+        }
+
+        boolean drawTabSwitcherBackdropBlur(Canvas canvas, View pieceView, RectF clipRect, float radiusPx) {
+            if (!inTabSwitcher || !tabBackdropValid || Build.VERSION.SDK_INT < 31
+                    || tabBackdropNode == null || !tabBackdropNode.hasDisplayList()
+                    || !canvas.isHardwareAccelerated() || pieceView == null) {
+                return false;
+            }
+            pieceView.getLocationInWindow(pieceLoc);
+            float sx = pieceView.getScaleX();
+            float sy = pieceView.getScaleY();
+            if (sx <= 0.05f || sy <= 0.05f) return false;
+            int save = canvas.save();
+            pieceClipPath.rewind();
+            pieceClipPath.addRoundRect(clipRect, radiusPx, radiusPx, Path.Direction.CW);
+            canvas.clipPath(pieceClipPath);
+            canvas.scale(1f / sx, 1f / sy);
+            canvas.translate(tabHolderLoc[0] - pieceLoc[0], tabHolderLoc[1] - pieceLoc[1]);
+            canvas.scale(1f / TAB_BLUR_SCALE, 1f / TAB_BLUR_SCALE);
+            canvas.drawRenderNode(tabBackdropNode);
+            canvas.restoreToCount(save);
+            return true;
+        }
+
         // Round 12: Echo-Music directional auto-hide state machine (50dp hysteresis, spring stiffness=500 damping=0.9)
         private boolean barsHiddenByScroll = false;
         private int lastRawControlsOffset = 0;
@@ -3578,6 +4120,22 @@ public final class CouiBrowserUiEnhancer {
                             blurController.setSlot(SurfaceViewBlurController.SLOT_ADDRESS_BAR, cachedControlContainer, -1f, 16);
                         }
                     }
+                    View tabHolder = decor.findViewById(ID_TAB_SWITCHER_HOLDER);
+                    boolean nowInTabSwitcher = (tabHolder != null && tabHolder.getVisibility() == View.VISIBLE
+                            && tabHolder instanceof ViewGroup && ((ViewGroup) tabHolder).getChildCount() > 0);
+                    if (nowInTabSwitcher != inTabSwitcher) {
+                        inTabSwitcher = nowInTabSwitcher;
+                        if (inTabSwitcher) {
+                            selectedCenterIndex = 2; // Tabs active
+                        } else {
+                            tabBackdropValid = false;
+                            if (selectedCenterIndex == 2) selectedCenterIndex = 1; // Return to Home
+                        }
+                        leftCircleView.invalidate();
+                        centerPillView.invalidate();
+                        rightCircleView.invalidate();
+                        if (flyoutOverlay != null) flyoutOverlay.invalidateCard();
+                    }
                     if (barsHiddenByScroll && shouldForceShowBars(decor)) {
                         setBarsHiddenByScroll(false);
                     }
@@ -3589,10 +4147,13 @@ public final class CouiBrowserUiEnhancer {
                     if (Math.abs(getTranslationY() - currentBotTransY) > 0.5f) {
                         setTranslationY(currentBotTransY);
                     }
-                    if (now - lastToolbarSyncMs >= 80L) {
+                    if (now - lastToolbarSyncMs >= 80L || inTabSwitcher) {
                         lastToolbarSyncMs = now;
                         hideTopToolbarButtons(decor);
                         styleTopAddressBarGlass(activity, decor, isDark, blurController.isBlurActive());
+                    }
+                    if (inTabSwitcher && !isRecordingTabBackdrop && isShown()) {
+                        recordTabSwitcherBackdrop(tabHolder);
                     }
                 }
                 blurController.update();
@@ -3737,13 +4298,16 @@ public final class CouiBrowserUiEnhancer {
                 View existing = content.findViewWithTag(FLYOUT_TAG);
                 if (existing instanceof CouiGlassFlyoutOverlay) {
                     flyoutOverlay = (CouiGlassFlyoutOverlay) existing;
+                    flyoutOverlay.setNavBar(this);
                 } else {
-                    flyoutOverlay = new CouiGlassFlyoutOverlay(activity, isDark, blurController);
+                    flyoutOverlay = new CouiGlassFlyoutOverlay(activity, isDark, blurController, this);
                     flyoutOverlay.setTag(FLYOUT_TAG);
                     content.addView(flyoutOverlay, new FrameLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.MATCH_PARENT));
                 }
+            } else {
+                flyoutOverlay.setNavBar(this);
             }
             flyoutOverlay.updateTheme(isDark);
             flyoutOverlay.updateAnchorMargin(currentBottomPadPx + dp(activity, 58 + 10));
@@ -3872,8 +4436,9 @@ public final class CouiBrowserUiEnhancer {
                 circleRect.set(0.75f, 0.75f, w - 0.75f, h - 0.75f);
 
                 // 1. Calibrated luminous translucent frosted Liquid Glass fill over 10dp SurfaceControl blur
-                //    (lets colors & forms scrolling underneath glow softly through, 1:1 navmenu-blur-in-gallery.mp4)
-                boolean realBlur = blurController.isBlurActive();
+                //    OR live RenderNode Gaussian backdrop blur over Tab Switcher cards (Round 13)
+                boolean tabBlur = drawTabSwitcherBackdropBlur(canvas, this, circleRect, radius);
+                boolean realBlur = tabBlur || (!inTabSwitcher && blurController.isBlurActive());
                 if (realBlur) {
                     surfacePaint.setColor(isDark ? 0x781E1E22 : 0x86FFFFFF);
                 } else {
@@ -4104,7 +4669,9 @@ public final class CouiBrowserUiEnhancer {
                 capsuleRect.set(0.75f, 0.75f, w - 0.75f, h - 0.75f);
 
                 // 1. Calibrated luminous translucent frosted Liquid Glass capsule fill
-                boolean realBlur = blurController.isBlurActive();
+                //    (supports both SurfaceControl blur over webpages & RenderNode blur over Tab Switcher!)
+                boolean tabBlur = drawTabSwitcherBackdropBlur(canvas, this, capsuleRect, radius);
+                boolean realBlur = tabBlur || (!inTabSwitcher && blurController.isBlurActive());
                 if (realBlur) {
                     surfacePaint.setColor(isDark ? 0x781E1E22 : 0x86FFFFFF);
                 } else {
@@ -4444,6 +5011,7 @@ public final class CouiBrowserUiEnhancer {
 
         private final Activity activity;
         private final SurfaceViewBlurController blurController;
+        private CouiLiquidGlassNavBar navBar;
         private final GlassFlyoutCardView cardView;
         private final LinearLayout listContainer;
         private final LinearLayout quickBar;
@@ -4452,10 +5020,16 @@ public final class CouiBrowserUiEnhancer {
         private boolean open = false;
 
         public CouiGlassFlyoutOverlay(Activity activity, boolean isDark, SurfaceViewBlurController blurController) {
+            this(activity, isDark, blurController, null);
+        }
+
+        public CouiGlassFlyoutOverlay(Activity activity, boolean isDark, SurfaceViewBlurController blurController,
+                CouiLiquidGlassNavBar navBar) {
             super(activity);
             this.activity = activity;
             this.isDark = isDark;
             this.blurController = blurController;
+            this.navBar = navBar;
             setVisibility(View.GONE);
             setClickable(true);
             setFocusable(true);
@@ -4621,6 +5195,14 @@ public final class CouiBrowserUiEnhancer {
             }
         }
 
+        void setNavBar(CouiLiquidGlassNavBar nb) {
+            this.navBar = nb;
+        }
+
+        void invalidateCard() {
+            if (cardView != null) cardView.invalidate();
+        }
+
         public boolean isOpen() {
             return open;
         }
@@ -4734,9 +5316,11 @@ public final class CouiBrowserUiEnhancer {
                 if (w > 0 && h > 0) {
                     float r = dpF(getContext(), 20f);
                     cardRect.set(0.75f, 0.75f, w - 0.75f, h - 0.75f);
-                    boolean realBlur = (blurController != null && blurController.isBlurActive());
+                    boolean tabBlur = (navBar != null && navBar.drawTabSwitcherBackdropBlur(canvas, this, cardRect, r));
+                    boolean realBlur = tabBlur || ((navBar == null || !navBar.isInTabSwitcher())
+                            && blurController != null && blurController.isBlurActive());
                     if (realBlur) {
-                        bgPaint.setColor(isDark ? 0xC6202024 : 0xC4FFFFFF);
+                        bgPaint.setColor(isDark ? 0xAE202024 : 0xACFFFFFF);
                     } else {
                         bgPaint.setColor(isDark ? 0xF0222224 : 0xF5F8F9FB);
                     }
