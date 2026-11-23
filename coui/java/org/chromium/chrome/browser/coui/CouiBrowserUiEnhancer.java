@@ -34,6 +34,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.LayerDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.graphics.drawable.StateListDrawable;
+import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -3582,8 +3583,11 @@ public final class CouiBrowserUiEnhancer {
         private final float[] svScale = new float[2];
         private final float[] vScale = new float[2];
         private long lastTreeScanMs = 0L;
+        private SurfaceView cachedPrimarySv = null;
         private boolean failed = false;
         private boolean hasActiveBlur = false;
+        private boolean blurSuppressed = false;
+        private boolean suppressDirty = false;
         private boolean loggedFirstActive = false;
 
         SurfaceViewBlurController(Activity activity, View hostView) {
@@ -3598,8 +3602,15 @@ public final class CouiBrowserUiEnhancer {
             slotBlurDp[slot] = blurDp;
         }
 
+        void setBlurSuppressed(boolean suppressed) {
+            if (this.blurSuppressed != suppressed) {
+                this.blurSuppressed = suppressed;
+                this.suppressDirty = true;
+            }
+        }
+
         boolean isBlurActive() {
-            return HIDDEN_API_AVAILABLE && !failed && hasActiveBlur;
+            return HIDDEN_API_AVAILABLE && !failed && !blurSuppressed && hasActiveBlur;
         }
 
         void update() {
@@ -3676,8 +3687,49 @@ public final class CouiBrowserUiEnhancer {
             android.view.AttachedSurfaceControl rootSc = hostView.getRootSurfaceControl();
             if (rootSc == null) return;
 
+            // Round 14: Fast O(1) suppression path during video playback, fullscreen, or Tab Switcher.
+            // Immediately clears backgroundBlurRadius=0 and hides all SurfaceControl blur layers so
+            // SurfaceFlinger drops out of 60fps RenderEngine GPU Gaussian blur into zero-GPU HWC overlay!
+            if (blurSuppressed) {
+                if (!suppressDirty && !hasActiveBlur) {
+                    return;
+                }
+                SurfaceControl.Transaction hideTx = null;
+                for (SlotLayer[] arr : surfaceLayers.values()) {
+                    if (arr == null) continue;
+                    for (int slot = 0; slot < SLOT_COUNT; slot++) {
+                        SlotLayer sl = arr[slot];
+                        if (sl != null && (sl.visible || sl.blurRadius != 0)) {
+                            if (hideTx == null) hideTx = new SurfaceControl.Transaction();
+                            M_SET_BLUR_RADIUS.invoke(hideTx, sl.child, 0);
+                            hideTx.setVisibility(sl.child, false);
+                            sl.visible = false;
+                            sl.blurRadius = 0;
+                        }
+                    }
+                }
+                if (hideTx != null) {
+                    rootSc.applyTransactionOnDraw(hideTx);
+                }
+                suppressDirty = false;
+                if (hasActiveBlur) {
+                    hasActiveBlur = false;
+                    for (View v : slotViews) {
+                        if (v != null) v.invalidate();
+                    }
+                }
+                return;
+            }
+            suppressDirty = false;
+
             long nowMs = SystemClock.uptimeMillis();
-            boolean needScan = scratchSurfaces.isEmpty() || (nowMs - lastTreeScanMs >= 500L);
+            boolean primaryHealthy = (cachedPrimarySv != null
+                    && cachedPrimarySv.isAttachedToWindow()
+                    && cachedPrimarySv.isShown()
+                    && cachedPrimarySv.getWidth() > 0
+                    && cachedPrimarySv.getHeight() > 0);
+            long scanIntervalMs = primaryHealthy ? 2000L : 500L;
+            boolean needScan = scratchSurfaces.isEmpty() || (nowMs - lastTreeScanMs >= scanIntervalMs);
             if (!needScan) {
                 for (int i = 0; i < scratchSurfaces.size(); i++) {
                     SurfaceView sv = scratchSurfaces.get(i);
@@ -3703,38 +3755,58 @@ public final class CouiBrowserUiEnhancer {
                 }
             }
 
+            // Round 14: Select strictly ONE primary active SurfaceView (largest valid area; topmost wins ties).
+            // Prevents double-stacking coui-glass-blur-0..4 across 2 Chromium SurfaceViews (6+ GPU blur passes!).
+            SurfaceView primarySv = null;
+            SurfaceControl primaryParentSc = null;
+            long bestArea = -1L;
+            for (int si = 0; si < scratchSurfaces.size(); si++) {
+                SurfaceView sv = scratchSurfaces.get(si);
+                SurfaceControl parentSc = sv.getSurfaceControl();
+                if (parentSc != null && parentSc.isValid()
+                        && sv.isShown() && sv.getWidth() > 0 && sv.getHeight() > 0
+                        && sv.getRootSurfaceControl() == rootSc) {
+                    long area = (long) sv.getWidth() * (long) sv.getHeight();
+                    if (area >= bestArea) {
+                        bestArea = area;
+                        primarySv = sv;
+                        primaryParentSc = parentSc;
+                    }
+                }
+            }
+            cachedPrimarySv = primarySv;
+
             // Allocate SurfaceControl.Transaction LAZILY only when a layer actually changes (ZERO steady-scroll JNI allocs!)
             SurfaceControl.Transaction tx = null;
             boolean anyActive = false;
 
-            for (int si = 0; si < scratchSurfaces.size(); si++) {
-                SurfaceView sv = scratchSurfaces.get(si);
-                SurfaceControl parentSc = sv.getSurfaceControl();
-                boolean svValid = (parentSc != null && parentSc.isValid()
-                        && sv.isShown() && sv.getWidth() > 0 && sv.getHeight() > 0
-                        && sv.getRootSurfaceControl() == rootSc);
-
-                SlotLayer[] arr = surfaceLayers.get(sv);
-                if (!svValid) {
-                    if (arr != null) {
-                        for (int slot = 0; slot < SLOT_COUNT; slot++) {
-                            if (arr[slot] != null && arr[slot].visible) {
-                                if (tx == null) tx = new SurfaceControl.Transaction();
-                                tx.setVisibility(arr[slot].child, false);
-                                arr[slot].visible = false;
-                            }
+            // Hide any blur layers belonging to non-primary or invalid SurfaceViews
+            for (Map.Entry<SurfaceView, SlotLayer[]> e : surfaceLayers.entrySet()) {
+                if (e.getKey() == primarySv) continue;
+                SlotLayer[] arr = e.getValue();
+                if (arr != null) {
+                    for (int slot = 0; slot < SLOT_COUNT; slot++) {
+                        SlotLayer sl = arr[slot];
+                        if (sl != null && (sl.visible || sl.blurRadius != 0)) {
+                            if (tx == null) tx = new SurfaceControl.Transaction();
+                            M_SET_BLUR_RADIUS.invoke(tx, sl.child, 0);
+                            tx.setVisibility(sl.child, false);
+                            sl.visible = false;
+                            sl.blurRadius = 0;
                         }
                     }
-                    continue;
                 }
+            }
 
+            if (primarySv != null && primaryParentSc != null) {
+                SlotLayer[] arr = surfaceLayers.get(primarySv);
                 if (arr == null) {
                     arr = new SlotLayer[SLOT_COUNT];
-                    surfaceLayers.put(sv, arr);
+                    surfaceLayers.put(primarySv, arr);
                 }
 
-                sv.getLocationInWindow(svLoc);
-                computeScale(sv, svScale);
+                primarySv.getLocationInWindow(svLoc);
+                computeScale(primarySv, svScale);
 
                 for (int slot = 0; slot < SLOT_COUNT; slot++) {
                     View target = slotViews[slot];
@@ -3744,10 +3816,12 @@ public final class CouiBrowserUiEnhancer {
                             && target.getAlpha() > 0.05f
                             && target.getWidth() > 0 && target.getHeight() > 0);
                     if (!targetVisible) {
-                        if (sl != null && sl.visible) {
+                        if (sl != null && (sl.visible || sl.blurRadius != 0)) {
                             if (tx == null) tx = new SurfaceControl.Transaction();
+                            M_SET_BLUR_RADIUS.invoke(tx, sl.child, 0);
                             tx.setVisibility(sl.child, false);
                             sl.visible = false;
+                            sl.blurRadius = 0;
                         }
                         continue;
                     }
@@ -3762,19 +3836,21 @@ public final class CouiBrowserUiEnhancer {
                     int bottom = Math.round((vLoc[1] + th - svLoc[1]) / svScale[1]);
                     tmpCrop.set(left, top, right, bottom);
 
-                    boolean overlaps = tmpCrop.intersects(0, 0, sv.getWidth(), sv.getHeight());
+                    boolean overlaps = tmpCrop.intersects(0, 0, primarySv.getWidth(), primarySv.getHeight());
                     if (!overlaps) {
-                        if (sl != null && sl.visible) {
+                        if (sl != null && (sl.visible || sl.blurRadius != 0)) {
                             if (tx == null) tx = new SurfaceControl.Transaction();
+                            M_SET_BLUR_RADIUS.invoke(tx, sl.child, 0);
                             tx.setVisibility(sl.child, false);
                             sl.visible = false;
+                            sl.blurRadius = 0;
                         }
                         continue;
                     }
 
-                    if (sl == null || sl.parent != parentSc) {
+                    if (sl == null || sl.parent != primaryParentSc) {
                         if (sl != null) releaseSlotLayer(sl);
-                        sl = new SlotLayer(parentSc, createEffectLayer(parentSc, slot));
+                        sl = new SlotLayer(primaryParentSc, createEffectLayer(primaryParentSc, slot));
                         arr[slot] = sl;
                     }
 
@@ -3815,7 +3891,7 @@ public final class CouiBrowserUiEnhancer {
             hasActiveBlur = anyActive;
             if (anyActive && !loggedFirstActive) {
                 loggedFirstActive = true;
-                Log.i(TAG, "SurfaceViewBlurController ACTIVE over " + scratchSurfaces.size() + " SurfaceView(s)");
+                Log.i(TAG, "SurfaceViewBlurController ACTIVE (primary 1/" + scratchSurfaces.size() + " SurfaceView)");
             }
             if (prevActive != hasActiveBlur) {
                 for (View v : slotViews) {
@@ -3874,6 +3950,7 @@ public final class CouiBrowserUiEnhancer {
 
         private final Activity activity;
         private final SurfaceViewBlurController blurController;
+        private final AudioManager audioManager;
         private final AccessoryCircleView leftCircleView;
         private final CenterCapsuleView centerPillView;
         private final AccessoryCircleView rightCircleView;
@@ -3881,13 +3958,32 @@ public final class CouiBrowserUiEnhancer {
         private int selectedCenterIndex = 1; // Default active item: Home
         private boolean isDark;
         private boolean hiddenByIme = false;
+        private boolean hiddenByFullscreen = false;
         private int currentBottomPadPx;
 
         private View cachedControlContainer;
+        private View cachedTabHolder;
+        private TextView cachedUrlBar;
         private long lastToolbarSyncMs = 0L;
+        private long lastUserInteractionMs = SystemClock.uptimeMillis();
+        private long lastVideoCheckMs = 0L;
+        private boolean cachedMediaActive = false;
+        private boolean cachedIsMediaUrl = false;
+        private String lastObservedUrl = "";
+        private boolean lastUrlFocused = false;
+        private boolean lastFullscreenState = false;
+        private boolean lastFlyoutOpen = false;
+        private final Runnable mediaBlurRecheckRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (isAttachedToWindow() && cachedMediaActive && !hiddenByFullscreen) {
+                    invalidate();
+                }
+            }
+        };
 
-        // Round 13: Real 120fps RenderNode Gaussian backdrop blur over ID_TAB_SWITCHER_HOLDER
-        // for the 3-piece bottom nav bar AND the Glass Flyout Menu when inside Tab Switcher!
+        // Round 13 + Round 14: Real 60-120fps RenderNode Gaussian backdrop blur over ID_TAB_SWITCHER_HOLDER
+        // driven strictly on entry / scroll / touch (zero infinite idle redraw loop!).
         private static final float TAB_BLUR_SCALE = 0.5f;
         private final RenderNode tabBackdropNode = (Build.VERSION.SDK_INT >= 31)
                 ? new RenderNode("coui-tab-switcher-blur") : null;
@@ -3897,11 +3993,87 @@ public final class CouiBrowserUiEnhancer {
         private boolean inTabSwitcher = false;
         private boolean isRecordingTabBackdrop = false;
         private boolean tabBackdropValid = false;
+        private boolean tabBackdropDirty = true;
+        private long lastTabBackdropMs = 0L;
+        private int lastTabScrollHash = 0;
         private int lastTabBlurW = -1;
         private int lastTabBlurH = -1;
 
         boolean isInTabSwitcher() {
             return inTabSwitcher;
+        }
+
+        private static boolean isVideoMediaUrl(String raw) {
+            if (raw == null || raw.isEmpty()) return false;
+            int end = raw.length();
+            int q = raw.indexOf('?');
+            if (q >= 0 && q < end) end = q;
+            int h = raw.indexOf('#');
+            if (h >= 0 && h < end) end = h;
+            if (end < 4) return false;
+            String s = raw.substring(Math.max(0, end - 6), end).toLowerCase(java.util.Locale.US);
+            return s.endsWith(".mp4") || s.endsWith(".mkv") || s.endsWith(".webm")
+                    || s.endsWith(".mov") || s.endsWith(".m4v") || s.endsWith(".m3u8")
+                    || s.endsWith(".mpd") || s.endsWith(".avi") || s.endsWith(".ogv")
+                    || s.endsWith(".3gp") || s.endsWith(".ts");
+        }
+
+        private static boolean hasKeepScreenOnView(View v, int depth) {
+            if (v == null || depth > 12 || v.getVisibility() != View.VISIBLE) return false;
+            if (v.getKeepScreenOn()) return true;
+            if (v instanceof ViewGroup) {
+                ViewGroup vg = (ViewGroup) v;
+                int n = vg.getChildCount();
+                for (int i = 0; i < n; i++) {
+                    if (hasKeepScreenOnView(vg.getChildAt(i), depth + 1)) return true;
+                }
+            }
+            return false;
+        }
+
+        private int computeTabSwitcherScrollHash(View tabHolder) {
+            if (tabHolder == null) return 0;
+            int h = tabHolder.getWidth() * 31 + tabHolder.getHeight();
+            View tabRv = tabHolder.findViewById(ID_TAB_LIST_RECYCLER_VIEW);
+            if (tabRv instanceof ViewGroup) {
+                ViewGroup rvg = (ViewGroup) tabRv;
+                int n = rvg.getChildCount();
+                h = h * 31 + n;
+                if (n > 0) {
+                    View c0 = rvg.getChildAt(0);
+                    if (c0 != null) {
+                        h = h * 31 + c0.getTop();
+                        h = h * 31 + Math.round(c0.getTranslationY());
+                    }
+                    View cLast = rvg.getChildAt(n - 1);
+                    if (cLast != null) {
+                        h = h * 31 + cLast.getBottom();
+                    }
+                }
+            }
+            return h;
+        }
+
+        private void setFullscreenHidden(boolean hide) {
+            if (this.hiddenByFullscreen == hide) return;
+            this.hiddenByFullscreen = hide;
+            if (hide) {
+                if (flyoutOverlay != null && flyoutOverlay.isOpen()) {
+                    flyoutOverlay.dismiss();
+                }
+                setVisibility(View.GONE);
+            } else {
+                setVisibility(View.VISIBLE);
+            }
+        }
+
+        @Override
+        public boolean dispatchTouchEvent(MotionEvent ev) {
+            lastUserInteractionMs = SystemClock.uptimeMillis();
+            if (inTabSwitcher) {
+                tabBackdropDirty = true;
+            }
+            return super.dispatchTouchEvent(ev);
         }
 
         private void recordTabSwitcherBackdrop(View tabHolder) {
@@ -3936,6 +4108,8 @@ public final class CouiBrowserUiEnhancer {
                     lastTabBlurH = rh;
                 }
                 tabBackdropValid = true;
+                tabBackdropDirty = false;
+                lastTabBackdropMs = SystemClock.uptimeMillis();
                 leftCircleView.invalidate();
                 centerPillView.invalidate();
                 rightCircleView.invalidate();
@@ -3998,12 +4172,14 @@ public final class CouiBrowserUiEnhancer {
         private boolean shouldForceShowBars(View decor) {
             if (decor == null) return true;
             if (flyoutOverlay != null && flyoutOverlay.isOpen()) return true;
-            View tabHolder = decor.findViewById(ID_TAB_SWITCHER_HOLDER);
+            View tabHolder = (cachedTabHolder != null && cachedTabHolder.isAttachedToWindow())
+                    ? cachedTabHolder : decor.findViewById(ID_TAB_SWITCHER_HOLDER);
             if (tabHolder != null && tabHolder.getVisibility() == View.VISIBLE
                     && tabHolder instanceof ViewGroup && ((ViewGroup) tabHolder).getChildCount() > 0) {
                 return true;
             }
-            View urlBar = decor.findViewById(ID_URL_BAR);
+            View urlBar = (cachedUrlBar != null && cachedUrlBar.isAttachedToWindow())
+                    ? cachedUrlBar : decor.findViewById(ID_URL_BAR);
             if (urlBar != null && urlBar.hasFocus()) return true;
             View ntp = decor.findViewById(ID_NTP_CONTENT);
             if (ntp != null && ntp.isShown()) return true;
@@ -4013,6 +4189,9 @@ public final class CouiBrowserUiEnhancer {
         /** Called on every Chromium BrowserControlsManager.notifyControlOffsetChanged() scroll frame. */
         void onChromiumControlsOffset(View controlContainer, int rawTopOffsetPx) {
             cachedControlContainer = controlContainer;
+            if (rawTopOffsetPx != lastRawControlsOffset) {
+                lastUserInteractionMs = SystemClock.uptimeMillis();
+            }
             Window w = activity.getWindow();
             View decor = (w != null) ? w.getDecorView() : null;
 
@@ -4114,21 +4293,36 @@ public final class CouiBrowserUiEnhancer {
                 if (w != null) {
                     View decor = w.getDecorView();
                     long now = SystemClock.uptimeMillis();
+                    boolean stateChanged = false;
+
                     if (cachedControlContainer == null || !cachedControlContainer.isAttachedToWindow()) {
                         cachedControlContainer = decor.findViewById(ID_CONTROL_CONTAINER);
                         if (cachedControlContainer != null) {
                             blurController.setSlot(SurfaceViewBlurController.SLOT_ADDRESS_BAR, cachedControlContainer, -1f, 16);
+                            stateChanged = true;
                         }
                     }
-                    View tabHolder = decor.findViewById(ID_TAB_SWITCHER_HOLDER);
+                    if (cachedTabHolder == null || !cachedTabHolder.isAttachedToWindow()) {
+                        cachedTabHolder = decor.findViewById(ID_TAB_SWITCHER_HOLDER);
+                    }
+                    if (cachedUrlBar == null || !cachedUrlBar.isAttachedToWindow()) {
+                        View uv = decor.findViewById(ID_URL_BAR);
+                        cachedUrlBar = (uv instanceof TextView) ? (TextView) uv : null;
+                    }
+
+                    View tabHolder = cachedTabHolder;
                     boolean nowInTabSwitcher = (tabHolder != null && tabHolder.getVisibility() == View.VISIBLE
                             && tabHolder instanceof ViewGroup && ((ViewGroup) tabHolder).getChildCount() > 0);
                     if (nowInTabSwitcher != inTabSwitcher) {
                         inTabSwitcher = nowInTabSwitcher;
+                        stateChanged = true;
                         if (inTabSwitcher) {
                             selectedCenterIndex = 2; // Tabs active
+                            tabBackdropDirty = true;
+                            lastTabScrollHash = 0;
                         } else {
                             tabBackdropValid = false;
+                            tabBackdropDirty = false;
                             if (selectedCenterIndex == 2) selectedCenterIndex = 1; // Return to Home
                         }
                         leftCircleView.invalidate();
@@ -4136,6 +4330,76 @@ public final class CouiBrowserUiEnhancer {
                         rightCircleView.invalidate();
                         if (flyoutOverlay != null) flyoutOverlay.invalidateCard();
                     }
+
+                    boolean isFullscreen = false;
+                    if (Build.VERSION.SDK_INT >= 30) {
+                        WindowInsets wi = decor.getRootWindowInsets();
+                        if (wi != null && !wi.isVisible(WindowInsets.Type.statusBars())) {
+                            isFullscreen = true;
+                        }
+                    }
+                    if (isFullscreen != lastFullscreenState) {
+                        lastFullscreenState = isFullscreen;
+                        setFullscreenHidden(isFullscreen);
+                        stateChanged = true;
+                    }
+
+                    boolean urlFocused = (cachedUrlBar != null && cachedUrlBar.hasFocus());
+                    if (urlFocused != lastUrlFocused) {
+                        lastUrlFocused = urlFocused;
+                        if (urlFocused) lastUserInteractionMs = now;
+                        stateChanged = true;
+                    }
+                    if (cachedUrlBar != null) {
+                        CharSequence cs = cachedUrlBar.getText();
+                        String urlStr = (cs != null) ? cs.toString() : "";
+                        if (!urlStr.equals(lastObservedUrl)) {
+                            lastObservedUrl = urlStr;
+                            cachedIsMediaUrl = isVideoMediaUrl(urlStr);
+                            lastUserInteractionMs = now;
+                            stateChanged = true;
+                        }
+                    }
+
+                    boolean flyoutOpen = (flyoutOverlay != null && flyoutOverlay.isOpen());
+                    if (flyoutOpen != lastFlyoutOpen) {
+                        lastFlyoutOpen = flyoutOpen;
+                        if (flyoutOpen) lastUserInteractionMs = now;
+                        stateChanged = true;
+                    }
+
+                    // Throttled media-activity check (350ms): detects BOTH direct video URLs and embedded
+                    // HTML5 <video> (including muted clips via Chromium PowerSaveBlocker KEEP_SCREEN_ON!)
+                    if (stateChanged || (now - lastVideoCheckMs >= 350L)) {
+                        lastVideoCheckMs = now;
+                        boolean winKeepOn = (w.getAttributes() != null
+                                && (w.getAttributes().flags & WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) != 0);
+                        boolean viewKeepOn = !winKeepOn && !inTabSwitcher && !cachedIsMediaUrl
+                                && hasKeepScreenOnView(decor, 0);
+                        boolean audioPlaying = false;
+                        if (!cachedIsMediaUrl && !winKeepOn && !viewKeepOn && audioManager != null) {
+                            try {
+                                audioPlaying = audioManager.isMusicActive();
+                            } catch (Throwable ignored) {}
+                        }
+                        cachedMediaActive = cachedIsMediaUrl || winKeepOn || viewKeepOn || audioPlaying;
+                    }
+
+                    // Round 14: Suppress 60fps SurfaceFlinger GPU blur during video playback, fullscreen,
+                    // or Tab Switcher (Tab Switcher uses RenderNode backdrop blur; normal pages & menus keep 120fps blur!)
+                    boolean suppressBlur = isFullscreen
+                            || inTabSwitcher
+                            || (!flyoutOpen && !urlFocused && (
+                                    cachedIsMediaUrl
+                                    || (cachedMediaActive && (now - lastUserInteractionMs >= 1200L))
+                               ));
+                    if (cachedMediaActive && !suppressBlur && !flyoutOpen && !urlFocused && !inTabSwitcher && !isFullscreen) {
+                        removeCallbacks(mediaBlurRecheckRunnable);
+                        long waitMs = Math.max(100L, 1250L - (now - lastUserInteractionMs));
+                        postDelayed(mediaBlurRecheckRunnable, waitMs);
+                    }
+                    blurController.setBlurSuppressed(suppressBlur);
+
                     if (barsHiddenByScroll && shouldForceShowBars(decor)) {
                         setBarsHiddenByScroll(false);
                     }
@@ -4147,14 +4411,32 @@ public final class CouiBrowserUiEnhancer {
                     if (Math.abs(getTranslationY() - currentBotTransY) > 0.5f) {
                         setTranslationY(currentBotTransY);
                     }
-                    if (now - lastToolbarSyncMs >= 80L || inTabSwitcher) {
+
+                    boolean prevBlurActive = blurController.isBlurActive();
+                    blurController.update();
+                    if (prevBlurActive != blurController.isBlurActive()) {
+                        stateChanged = true;
+                    }
+
+                    long syncInterval = inTabSwitcher ? 250L : 500L;
+                    if (stateChanged || (now - lastToolbarSyncMs >= syncInterval)) {
                         lastToolbarSyncMs = now;
                         hideTopToolbarButtons(decor);
                         styleTopAddressBarGlass(activity, decor, isDark, blurController.isBlurActive());
                     }
+
+                    // Round 14: Drive Tab Switcher RenderNode blur strictly on entry / scroll / touch (ZERO 120fps idle loop!)
                     if (inTabSwitcher && !isRecordingTabBackdrop && isShown()) {
-                        recordTabSwitcherBackdrop(tabHolder);
+                        int scrollHash = computeTabSwitcherScrollHash(tabHolder);
+                        boolean scrollChanged = (scrollHash != lastTabScrollHash);
+                        boolean recentTouch = (now - lastUserInteractionMs < 400L);
+                        if (!tabBackdropValid || tabBackdropDirty || scrollChanged
+                                || (recentTouch && (now - lastTabBackdropMs >= 16L))) {
+                            lastTabScrollHash = scrollHash;
+                            recordTabSwitcherBackdrop(tabHolder);
+                        }
                     }
+                    return true;
                 }
                 blurController.update();
                 return true;
@@ -4166,6 +4448,11 @@ public final class CouiBrowserUiEnhancer {
             this.activity = activity;
             this.isDark = isDarkMode(activity);
             this.blurController = new SurfaceViewBlurController(activity, this);
+            AudioManager am = null;
+            try {
+                am = (AudioManager) activity.getSystemService(Context.AUDIO_SERVICE);
+            } catch (Throwable ignored) {}
+            this.audioManager = am;
             setBackground(null);
             setClipChildren(false);
             setClipToPadding(false);
@@ -4211,9 +4498,11 @@ public final class CouiBrowserUiEnhancer {
                 public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
                     int navBottom;
                     boolean imeVisible;
+                    boolean fullscreenNow = false;
                     if (Build.VERSION.SDK_INT >= 30) {
                         navBottom = insets.getInsets(WindowInsets.Type.navigationBars()).bottom;
                         imeVisible = insets.isVisible(WindowInsets.Type.ime());
+                        fullscreenNow = !insets.isVisible(WindowInsets.Type.statusBars());
                     } else {
                         navBottom = insets.getSystemWindowInsetBottom();
                         imeVisible = navBottom > dp(v.getContext(), 120);
@@ -4223,6 +4512,8 @@ public final class CouiBrowserUiEnhancer {
                     currentBottomPadPx = Math.max(dp(v.getContext(), 18), navBottom + dp(v.getContext(), 6));
                     v.setPadding(hPad, tPad, hPad, currentBottomPadPx);
                     setImeHidden(imeVisible);
+                    lastFullscreenState = fullscreenNow;
+                    setFullscreenHidden(fullscreenNow);
                     if (flyoutOverlay != null) {
                         flyoutOverlay.updateAnchorMargin(currentBottomPadPx + dp(v.getContext(), 58 + 10));
                     }
@@ -4239,6 +4530,7 @@ public final class CouiBrowserUiEnhancer {
 
         @Override
         protected void onDetachedFromWindow() {
+            removeCallbacks(mediaBlurRecheckRunnable);
             getViewTreeObserver().removeOnPreDrawListener(preDrawListener);
             blurController.releaseAll();
             super.onDetachedFromWindow();
