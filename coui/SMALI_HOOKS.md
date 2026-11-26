@@ -68,6 +68,13 @@ against (`chromium-ChromePublic.apk-default-807807974`). Re-derive them for any 
 | `Ljqe.n()` / `Ljqe.c()` / `Ljqe.s(F)` (`SlidingPaneLayout` used by `MultiColumnSettings`) | `onSlidingPaneBeforeSlide(this, true/false)` in `n()`/`c()`; `trySnapSlidingPaneImmediate(this, v2, targetLeft)` after `Ld6i.k()` in `s(F)` | Captures full-screen outgoing snapshot before pane open/close and snaps `SlidingPaneLayout` immediately underneath so `CouiSettingsPageSlideController` animates the entire screen (`AppBarLayout` + title + Search pill + cards) as one rigid ColorOS 17 sheet. |
 | `MultiColumnSettings.Q1()` & `Lr4c.u()` (`PreferenceHeaderFragmentCompat`) | `onMultiColumnSettingsBeforePush(this)` + clear `TRANSIT_FRAGMENT_FADE (0x1003)` | Triggers the same Method 1 full-screen forward slide for nested sub-sub-settings pushes when the detail pane is already open. |
 
+## Round 18 — static 16dp sub-settings margins, expressive ColorOS 17 EdgeEffect overscroll & COUI capsule sliders
+
+| Target | Patch | Why |
+|---|---|---|
+| `Lhki.f(Lda6, Lt86, View)` (`WideDisplayPadding` lifecycle callback) | clear stock divider (`Lg4c.N1(null)`) and immediately `return-void` | Eliminates Chromium's dynamic `WideDisplayPadding` (`0x7f080ba2 = 16dp`) container/item-decoration padding (`Lgki`/`Lfki`/`Lbva`/`Lcki`) across every sub-settings fragment so all Settings lists stay 0px-padded horizontally and every card uses static fixed `16dp` margins from frame 1 (zero horizontal snap/resize during slide-in and zero double-inset on Accessibility `ContainedLinearLayout` cards). |
+| `Lcom/google/android/material/slider/Slider.onDraw(Canvas)` | after `super.onDraw(canvas)`: early-return when `CouiBrowserUiEnhancer.drawCouiMaterialSlider(this, canvas)` returns `true` | Replaces Chromium's thin Material3 bar-thumb slider in Accessibility (`Default zoom` & `Text size contrast`) with the authentic ColorOS 17 `18dp` thick capsule slider (`#E5E6EA`/`#2C2C2E` track, `#007AFF`/`#1A8CFF` continuous active fill enclosing the `#FFFFFF` `13.6dp` circular thumb with subtle shadow, touch-aligned via `Slider.a0` & `Slider.S0`, plus ROM haptic `308`). |
+
 ## Runtime notes (Java side)
 
 - The header glass is a dedicated, non-clickable child of `control_container`. It is appended last

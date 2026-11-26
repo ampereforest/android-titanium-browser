@@ -62,6 +62,7 @@ import android.view.MotionEvent;
 import android.view.SearchEvent;
 import android.view.SurfaceControl;
 import android.view.SurfaceView;
+import android.view.VelocityTracker;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
@@ -80,6 +81,7 @@ import android.view.animation.PathInterpolator;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.CompoundButton;
+import android.widget.EdgeEffect;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
@@ -264,6 +266,24 @@ public final class CouiBrowserUiEnhancer {
     private static final int ID_RADIO_BUTTON = 0x7f010a4b;
     private static final int ID_RADIO_PRIMARY = 0x7f0109ee;
     private static final int ID_RADIO_DESC = 0x7f0103d8;
+    private static final int ID_HOMEPAGE_RADIO_TITLE = 0x7f010d49;
+    private static final int ID_PREFERENCES_HEADER = 0x7f0109cd;
+    private static final int ID_PREFERENCES_DETAIL = 0x7f0109cb;
+    private static final int ID_PAGE_ZOOM_SECTION = 0x7f010947;
+    private static final int ID_PAGE_ZOOM_PREVIEW_CARD = 0x7f0109d7;
+    private static final int ID_PAGE_ZOOM_VALUE_TEXT = 0x7f01093b;
+    private static final int ID_PAGE_ZOOM_DEC = 0x7f01093d;
+    private static final int ID_PAGE_ZOOM_INC = 0x7f01093f;
+    private static final int ID_PAGE_ZOOM_PREVIEW_IMG = 0x7f010941;
+    private static final int ID_PAGE_ZOOM_PREVIEW_LARGE = 0x7f010942;
+    private static final int ID_PAGE_ZOOM_PREVIEW_MED = 0x7f010943;
+    private static final int ID_PAGE_ZOOM_PREVIEW_SMALL = 0x7f010944;
+    private static final int ID_PAGE_ZOOM_SLIDER = 0x7f010948;
+    private static final int ID_TEXT_CONTRAST_SECTION = 0x7f010d13;
+    private static final int ID_TEXT_CONTRAST_VALUE_TEXT = 0x7f010d0f;
+    private static final int ID_TEXT_CONTRAST_DEC = 0x7f010d10;
+    private static final int ID_TEXT_CONTRAST_INC = 0x7f010d11;
+    private static final int ID_TEXT_CONTRAST_SLIDER = 0x7f010d14;
 
     // ColorOS 17 ROM Haptic Feedback constants
     private static final int COUI_HAPTIC_SWITCH = 302;
@@ -281,7 +301,24 @@ public final class CouiBrowserUiEnhancer {
     private static boolean sSwitchThumbPosResolved = false;
     private static java.lang.ref.WeakReference<CouiLiquidGlassNavBar> sActiveNavBar;
     private static boolean sSettingsSlideActive = false;
+    private static boolean sSettingsSlideAnimating = false;
+    private static int sCachedRootAppBarBottom = 0;
+    private static int sCachedSubAppBarBottom = 0;
     private static final WeakHashMap<Activity, CouiSettingsPageSlideController> sSettingsSlideControllers = new WeakHashMap<>();
+    private static final WeakHashMap<ViewGroup, CouiOverscrollController> sOverscrollControllers = new WeakHashMap<>();
+    private static final WeakHashMap<View, Float> sLastSliderValues = new WeakHashMap<>();
+    private static final Paint SLIDER_TRACK_PAINT = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private static final Paint SLIDER_ACTIVE_PAINT = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private static final Paint SLIDER_SHADOW_PAINT = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private static final Paint SLIDER_THUMB_PAINT = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private static final RectF SLIDER_RECT = new RectF();
+    private static Field sSliderValueFromField;
+    private static Field sSliderValueToField;
+    private static Field sSliderValuesField;
+    private static Field sSliderTrackWidthField;
+    private static Field sSliderSidePaddingField;
+    private static Method sSliderCenterYMethod;
+    private static boolean sSliderReflectInit = false;
     private static Field sFmHostField;
     private static Field sHostActivityField;
     private static Method sFmBackStackCountMethod;
@@ -293,6 +330,10 @@ public final class CouiBrowserUiEnhancer {
         SWITCH_TRACK_PAINT.setStyle(Paint.Style.FILL);
         SWITCH_THUMB_SHADOW_PAINT.setStyle(Paint.Style.FILL);
         SWITCH_THUMB_PAINT.setStyle(Paint.Style.FILL);
+        SLIDER_TRACK_PAINT.setStyle(Paint.Style.FILL);
+        SLIDER_ACTIVE_PAINT.setStyle(Paint.Style.FILL);
+        SLIDER_SHADOW_PAINT.setStyle(Paint.Style.FILL);
+        SLIDER_THUMB_PAINT.setStyle(Paint.Style.FILL);
     }
 
     /**
@@ -2885,6 +2926,7 @@ public final class CouiBrowserUiEnhancer {
         fragContent.getViewTreeObserver().addOnPreDrawListener(new ViewTreeObserver.OnPreDrawListener() {
             @Override
             public boolean onPreDraw() {
+                if (sSettingsSlideAnimating) return true;
                 long now = SystemClock.uptimeMillis();
                 if (now - lastSync[0] < 90L) return true;
                 lastSync[0] = now;
@@ -3119,6 +3161,7 @@ public final class CouiBrowserUiEnhancer {
 
     private static int getSettingsAppBarBottom(Activity activity) {
         if (activity == null) return 0;
+        boolean isRoot = isRootSettingsScreen(activity);
         View rootCoord = activity.findViewById(ID_SETTINGS_ACTIVITY);
         View appBar = activity.findViewById(ID_SETTINGS_APP_BAR);
         View searchBox = activity.findViewById(ID_SEARCH_BOX);
@@ -3136,8 +3179,70 @@ public final class CouiBrowserUiEnhancer {
                 bestBottom = sbBottom;
             }
         }
-        if (bestBottom > 0) return bestBottom;
-        return dp(activity, isRootSettingsScreen(activity) ? 202 : 132);
+        // Validate measured height against expected root-vs-sub layout so a pre-layout stale AppBarLayout
+        // bottom (e.g. 430px sub-settings height while large "Settings" title just became VISIBLE) NEVER
+        // overwrites sCachedRootAppBarBottom or clamps MainSettings's scroll position upward!
+        View largeTv = (appBar != null) ? appBar.findViewWithTag(SETTINGS_LARGE_TITLE_TAG) : null;
+        int thresholdPx = dp(activity, 175);
+        boolean measurementValid;
+        if (isRoot) {
+            measurementValid = (bestBottom >= thresholdPx)
+                    && (largeTv == null || (largeTv.getVisibility() == View.VISIBLE && largeTv.getHeight() > 0));
+        } else {
+            measurementValid = (bestBottom > 0 && bestBottom <= thresholdPx)
+                    && (largeTv == null || largeTv.getVisibility() != View.VISIBLE);
+        }
+        if (measurementValid) {
+            if (isRoot) {
+                sCachedRootAppBarBottom = bestBottom;
+            } else {
+                sCachedSubAppBarBottom = bestBottom;
+            }
+            return bestBottom;
+        }
+        if (isRoot && sCachedRootAppBarBottom > 0) return sCachedRootAppBarBottom;
+        if (!isRoot && sCachedSubAppBarBottom > 0) return sCachedSubAppBarBottom;
+        return dp(activity, isRoot ? 202 : 132);
+    }
+
+    /** Returns +1 if v sits inside MultiColumnSettings's root header pane, -1 if in detail pane, 0 otherwise. */
+    private static int getSettingsPaneRole(View v) {
+        View cur = v;
+        for (int depth = 0; depth < 14 && cur != null; depth++) {
+            int id = cur.getId();
+            if (id == ID_PREFERENCES_HEADER) return 1;
+            if (id == ID_PREFERENCES_DETAIL) return -1;
+            if (id == ID_SETTINGS_CONTENT || id == ID_SETTINGS_ACTIVITY) break;
+            ViewParent p = cur.getParent();
+            cur = (p instanceof View) ? (View) p : null;
+        }
+        return 0;
+    }
+
+    /** Resolves exact AppBarLayout bottom for a specific scrollable view, isolating root vs sub-settings heights. */
+    private static int getSettingsAppBarBottomForView(View scrollView, Activity act) {
+        Context ctx = scrollView.getContext();
+        int paneRole = getSettingsPaneRole(scrollView);
+        if (act == null) {
+            return (paneRole > 0 && sCachedRootAppBarBottom > 0)
+                    ? sCachedRootAppBarBottom
+                    : (paneRole < 0 && sCachedSubAppBarBottom > 0 ? sCachedSubAppBarBottom : dp(ctx, paneRole > 0 ? 202 : 132));
+        }
+        boolean isRootActive = isRootSettingsScreen(act);
+        if (paneRole > 0) {
+            // Root MainSettings pane: measure ONLY when root is active; otherwise preserve cached root height!
+            if (isRootActive) {
+                return getSettingsAppBarBottom(act);
+            }
+            return sCachedRootAppBarBottom > 0 ? sCachedRootAppBarBottom : dp(ctx, 202);
+        } else if (paneRole < 0) {
+            // Sub-settings detail pane: measure ONLY when sub-settings is active; otherwise preserve cached sub height!
+            if (!isRootActive) {
+                return getSettingsAppBarBottom(act);
+            }
+            return sCachedSubAppBarBottom > 0 ? sCachedSubAppBarBottom : dp(ctx, 132);
+        }
+        return getSettingsAppBarBottom(act);
     }
 
     /**
@@ -3691,7 +3796,15 @@ public final class CouiBrowserUiEnhancer {
         Context ctx = rv.getContext();
         Activity act = (activity != null) ? activity : unwrapActivity(ctx);
         normalizeSettingsHorizontalGutter(rv);
-        int topPad = (act != null ? getSettingsAppBarBottom(act) : dp(ctx, 132)) + dp(ctx, 12);
+        if (act != null) {
+            int role = getSettingsPaneRole(rv);
+            boolean isRootActive = isRootSettingsScreen(act);
+            // Never shrink hidden MainSettings padding while viewing a sub-page (or vice versa)
+            if ((role > 0 && !isRootActive) || (role < 0 && isRootActive)) {
+                return;
+            }
+        }
+        int topPad = getSettingsAppBarBottomForView(rv, act) + dp(ctx, 12);
         int botPad = dp(ctx, 28);
         int oldTop = rv.getPaddingTop();
         boolean atTopBefore = !rv.canScrollVertically(-1);
@@ -3706,7 +3819,10 @@ public final class CouiBrowserUiEnhancer {
             }
         }
         if (rv instanceof ViewGroup) {
-            ((ViewGroup) rv).setClipToPadding(false);
+            ViewGroup vg = (ViewGroup) rv;
+            if (vg.getClipToPadding()) {
+                vg.setClipToPadding(false);
+            }
         }
     }
 
@@ -3718,7 +3834,6 @@ public final class CouiBrowserUiEnhancer {
             applySettingsRecyclerPadding(view, activity);
             if (view instanceof ViewGroup) {
                 ViewGroup rv = (ViewGroup) view;
-                rv.setOverScrollMode(View.OVER_SCROLL_NEVER);
                 attachCouiOverscroll(rv);
                 for (int i = 0; i < rv.getChildCount(); i++) {
                     stylePreferenceItemView(rv.getChildAt(i), dark, null);
@@ -3730,7 +3845,6 @@ public final class CouiBrowserUiEnhancer {
         } else if (view instanceof ScrollView || cls.contains("NestedScrollView")) {
             view.setBackgroundColor(canvasColor);
             applySettingsRecyclerPadding(view, activity);
-            view.setOverScrollMode(View.OVER_SCROLL_NEVER);
             if (view instanceof ViewGroup) {
                 attachCouiOverscroll((ViewGroup) view);
             }
@@ -3791,24 +3905,57 @@ public final class CouiBrowserUiEnhancer {
             group.setPadding(0, group.getPaddingTop(), 0, group.getPaddingBottom());
         }
 
-        // Also enforce exact 16dp horizontal margin on the parent card item inside RecyclerView
-        ViewParent p = group.getParent();
-        if (p instanceof View) {
-            View cardRoot = (View) p;
+        // Walk upward to the direct RecyclerView child (cardRoot) and enforce static fixed 16dp margins
+        // + 20dp ColorOS 17 squircle card surface (fixes Homepage "Open this page" & Address bar cards!).
+        View cardRoot = group;
+        ViewParent curP = group.getParent();
+        for (int depth = 0; depth < 6 && curP instanceof View; depth++) {
+            View pv = (View) curP;
+            if (pv.getClass().getName().contains("RecyclerView") || pv instanceof ListView || pv instanceof ScrollView) {
+                break;
+            }
+            cardRoot = pv;
+            curP = pv.getParent();
+        }
+        if (cardRoot != null) {
             int wantMargin = dp(ctx, 16);
             ViewGroup.LayoutParams clp = cardRoot.getLayoutParams();
             if (clp instanceof ViewGroup.MarginLayoutParams) {
                 ViewGroup.MarginLayoutParams cmlp = (ViewGroup.MarginLayoutParams) clp;
                 if (cmlp.leftMargin != wantMargin || cmlp.rightMargin != wantMargin
+                        || cmlp.getMarginStart() != wantMargin || cmlp.getMarginEnd() != wantMargin
                         || cmlp.width != ViewGroup.LayoutParams.MATCH_PARENT) {
                     cmlp.leftMargin = wantMargin;
                     cmlp.rightMargin = wantMargin;
+                    cmlp.setMarginStart(wantMargin);
+                    cmlp.setMarginEnd(wantMargin);
                     cmlp.width = ViewGroup.LayoutParams.MATCH_PARENT;
                     cardRoot.setLayoutParams(cmlp);
                 }
             }
             if (cardRoot.getPaddingLeft() != 0 || cardRoot.getPaddingRight() != 0) {
                 cardRoot.setPadding(0, cardRoot.getPaddingTop(), 0, cardRoot.getPaddingBottom());
+            }
+            String cardBgTag = "coui_radio_card_bg_" + (dark ? "d" : "l");
+            if (!cardBgTag.equals(cardRoot.getTag())) {
+                GradientDrawable cardBg = new GradientDrawable();
+                cardBg.setShape(GradientDrawable.RECTANGLE);
+                cardBg.setCornerRadius(dpF(ctx, 20f));
+                cardBg.setColor(dark ? 0xFF1C1C1E : 0xFFFFFFFF);
+                cardRoot.setBackground(cardBg);
+                cardRoot.setTag(cardBgTag);
+            }
+            // Style header label inside RadioButtonGroupHomepagePreference ("Open this page" id=0x7f010d49)
+            View headerTv = cardRoot.findViewById(ID_HOMEPAGE_RADIO_TITLE);
+            if (headerTv instanceof TextView && headerTv.getParent() == cardRoot) {
+                TextView htv = (TextView) headerTv;
+                htv.setTextColor(dark ? 0x8AFFFFFF : 0xFF7F7F7F);
+                htv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f);
+                htv.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+                int hpH = dp(ctx, 16);
+                if (htv.getPaddingLeft() != hpH || htv.getPaddingRight() != hpH) {
+                    htv.setPadding(hpH, dp(ctx, 14), hpH, dp(ctx, 6));
+                }
             }
         }
 
@@ -3966,15 +4113,198 @@ public final class CouiBrowserUiEnhancer {
         @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
     }
 
-    private static void styleCouiSeekBar(SeekBar sb, boolean dark) {
+    /**
+     * Round 18 smali hook (com.google.android.material.slider.Slider.onDraw(Canvas)):
+     * Renders authentic ColorOS 17 thick 18dp capsule sliders (matching scroll-design-coloros.jpg 1:1):
+     * - Full 18dp-tall semicircular-cap inactive track (#E5E6EA Light / #2C2C2E Dark).
+     * - Continuous active fill (#007AFF Light / #1A8CFF Dark) from left cap enclosing the circular thumb
+     *   with zero gap (forms an 18dp blue halo ring wrapping the thumb even at 0%).
+     * - Crisp 13.6dp #FFFFFF circular thumb centered pixel-exact on Slider.a0 + frac * Slider.S0 with
+     *   subtle soft drop shadow and ROM haptic 308 (COUI_HAPTIC_SLIDER) on step changes while dragging.
+     */
+    public static boolean drawCouiMaterialSlider(View sliderView, Canvas canvas) {
+        if (sliderView == null || canvas == null) return false;
+        int w = sliderView.getWidth();
+        int h = sliderView.getHeight();
+        if (w <= 0 || h <= 0) return false;
+        try {
+            if (!sSliderReflectInit) {
+                sSliderReflectInit = true;
+                Class<?> cls = sliderView.getClass();
+                sSliderValueFromField = findFieldUp(cls, "H0");
+                sSliderValueToField = findFieldUp(cls, "I0");
+                sSliderValuesField = findFieldUp(cls, "J0");
+                sSliderTrackWidthField = findFieldUp(cls, "S0");
+                sSliderSidePaddingField = findFieldUp(cls, "a0");
+                try {
+                    Method m = cls.getDeclaredMethod("e");
+                    m.setAccessible(true);
+                    sSliderCenterYMethod = m;
+                } catch (Throwable ignored) {}
+            }
+            if (sSliderValueFromField == null || sSliderValueToField == null || sSliderValuesField == null) {
+                return false;
+            }
+            float valFrom = sSliderValueFromField.getFloat(sliderView);
+            float valTo = sSliderValueToField.getFloat(sliderView);
+            Object valsObj = sSliderValuesField.get(sliderView);
+            if (!(valsObj instanceof List<?>) || ((List<?>) valsObj).isEmpty()) return false;
+            Object first = ((List<?>) valsObj).get(0);
+            if (!(first instanceof Float)) return false;
+            float val = (Float) first;
+
+            Float prevVal = sLastSliderValues.put(sliderView, val);
+            if (prevVal != null && Math.abs(prevVal - val) > 0.0001f && sliderView.isPressed()) {
+                performCouiHapticCode(sliderView, COUI_HAPTIC_SLIDER);
+            }
+
+            float range = valTo - valFrom;
+            float frac = (range > 0f) ? Math.max(0f, Math.min(1f, (val - valFrom) / range)) : 0f;
+
+            Context ctx = sliderView.getContext();
+            boolean dark = isDarkMode(ctx);
+            boolean enabled = sliderView.isEnabled();
+            float r = dpF(ctx, 9f); // 18dp capsule track height
+
+            float cy = h * 0.5f;
+            if (sSliderCenterYMethod != null) {
+                try {
+                    int calcCy = (Integer) sSliderCenterYMethod.invoke(sliderView);
+                    if (calcCy > 0 && calcCy < h) {
+                        cy = calcCy;
+                    }
+                } catch (Throwable ignored) {}
+            }
+
+            int trackW = (sSliderTrackWidthField != null) ? sSliderTrackWidthField.getInt(sliderView) : 0;
+            int sidePad = (sSliderSidePaddingField != null) ? sSliderSidePaddingField.getInt(sliderView) : 0;
+            float startCx;
+            float span;
+            if (trackW > 0) {
+                startCx = sidePad;
+                span = trackW;
+            } else {
+                startCx = sliderView.getPaddingLeft() + r;
+                span = Math.max(1f, w - sliderView.getPaddingLeft() - sliderView.getPaddingRight() - 2f * r);
+            }
+            float trackL = Math.max(dpF(ctx, 1f), startCx - r);
+            float trackR = Math.min(w - dpF(ctx, 1f), startCx + span + r);
+            if (trackR <= trackL + 2f * r) {
+                trackL = dpF(ctx, 2f);
+                trackR = Math.max(trackL + 2f * r, w - dpF(ctx, 2f));
+            }
+            float thumbCx = startCx + frac * span;
+            thumbCx = Math.max(trackL + r, Math.min(trackR - r, thumbCx));
+
+            // 1. Inactive capsule background (#E5E6EA Light / #2C2C2E Dark)
+            SLIDER_TRACK_PAINT.setColor(dark ? 0xFF2C2C2E : 0xFFE5E6EA);
+            SLIDER_RECT.set(trackL, cy - r, trackR, cy + r);
+            canvas.drawRoundRect(SLIDER_RECT, r, r, SLIDER_TRACK_PAINT);
+
+            // 2. Active continuous blue capsule enclosing thumb (#007AFF Light / #1A8CFF Dark)
+            int accent = dark ? 0xFF1A8CFF : 0xFF007AFF;
+            if (!enabled) {
+                accent = (accent & 0x00FFFFFF) | 0x66000000;
+            }
+            SLIDER_ACTIVE_PAINT.setColor(accent);
+            float activeR = Math.min(trackR, thumbCx + r);
+            SLIDER_RECT.set(trackL, cy - r, Math.max(trackL + 2f * r, activeR), cy + r);
+            canvas.drawRoundRect(SLIDER_RECT, r, r, SLIDER_ACTIVE_PAINT);
+
+            // 3. Soft circular thumb ambient shadow + crisp #FFFFFF circular thumb (~13.6dp)
+            float thumbR = r - dpF(ctx, 2.2f);
+            SLIDER_SHADOW_PAINT.setColor(dark ? 0x38000000 : 0x26000000);
+            canvas.drawCircle(thumbCx, cy + dpF(ctx, 0.7f), thumbR + dpF(ctx, 0.35f), SLIDER_SHADOW_PAINT);
+
+            SLIDER_THUMB_PAINT.setColor(enabled ? 0xFFFFFFFF : 0xCCFFFFFF);
+            canvas.drawCircle(thumbCx, cy, thumbR, SLIDER_THUMB_PAINT);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private static void styleCouiSeekBar(final SeekBar sb, boolean dark) {
         if (sb == null) return;
-        String tag = "coui_sb_" + (dark ? "d" : "l");
+        String tag = "coui_sb_r18_" + (dark ? "d" : "l");
         if (tag.equals(sb.getTag())) return;
         sb.setTag(tag);
-        int accent = dark ? 0xFF1A8CFF : 0xFF0080FF;
-        sb.setProgressTintList(ColorStateList.valueOf(accent));
-        sb.setProgressBackgroundTintList(ColorStateList.valueOf(dark ? 0x26FFFFFF : 0x16000000));
-        sb.setThumbTintList(ColorStateList.valueOf(accent));
+        Context ctx = sb.getContext();
+        sb.setSplitTrack(false);
+        sb.setProgressTintList(null);
+        sb.setProgressBackgroundTintList(null);
+        sb.setThumbTintList(null);
+        sb.setThumb(new ColorDrawable(Color.TRANSPARENT));
+        sb.setThumbOffset(0);
+        sb.setProgressDrawable(new CouiCapsuleSeekBarDrawable(ctx, sb, dark));
+        int minH = dp(ctx, 32);
+        if (sb.getMinimumHeight() < minH) {
+            sb.setMinimumHeight(minH);
+        }
+    }
+
+    /** 1:1 ColorOS 17 18dp capsule SeekBar drawable for legacy SeekBar widgets. */
+    private static final class CouiCapsuleSeekBarDrawable extends Drawable {
+        private final Context ctx;
+        private final SeekBar sb;
+        private final boolean isDark;
+        private final Paint trackP = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint activeP = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint shadowP = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint thumbP = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF rf = new RectF();
+        private int lastProg = -1;
+
+        CouiCapsuleSeekBarDrawable(Context ctx, SeekBar sb, boolean isDark) {
+            this.ctx = ctx;
+            this.sb = sb;
+            this.isDark = isDark;
+            this.lastProg = sb.getProgress();
+        }
+
+        @Override
+        protected boolean onLevelChange(int level) {
+            int p = sb.getProgress();
+            if (p != lastProg) {
+                lastProg = p;
+                if (sb.isPressed()) {
+                    performCouiHapticCode(sb, COUI_HAPTIC_SLIDER);
+                }
+            }
+            invalidateSelf();
+            return true;
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            Rect b = getBounds();
+            if (b.isEmpty()) return;
+            float r = dpF(ctx, 9f);
+            float cy = b.exactCenterY();
+            float trackL = b.left + dpF(ctx, 2f);
+            float trackR = Math.max(trackL + 2f * r, b.right - dpF(ctx, 2f));
+            int max = Math.max(1, sb.getMax());
+            float frac = Math.max(0f, Math.min(1f, (float) sb.getProgress() / max));
+            float thumbCx = (trackL + r) + frac * Math.max(0f, (trackR - trackL) - 2f * r);
+
+            trackP.setColor(isDark ? 0xFF2C2C2E : 0xFFE5E6EA);
+            rf.set(trackL, cy - r, trackR, cy + r);
+            canvas.drawRoundRect(rf, r, r, trackP);
+
+            activeP.setColor(isDark ? 0xFF1A8CFF : 0xFF007AFF);
+            rf.set(trackL, cy - r, Math.min(trackR, thumbCx + r), cy + r);
+            canvas.drawRoundRect(rf, r, r, activeP);
+
+            float thumbR = r - dpF(ctx, 2.2f);
+            shadowP.setColor(isDark ? 0x38000000 : 0x26000000);
+            canvas.drawCircle(thumbCx, cy + dpF(ctx, 0.7f), thumbR + dpF(ctx, 0.35f), shadowP);
+            thumbP.setColor(0xFFFFFFFF);
+            canvas.drawCircle(thumbCx, cy, thumbR, thumbP);
+        }
+
+        @Override public void setAlpha(int a) {}
+        @Override public void setColorFilter(ColorFilter cf) {}
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
     }
 
     private static void styleCouiButton(Button btn, boolean dark) {
@@ -4022,12 +4352,13 @@ public final class CouiBrowserUiEnhancer {
             lv.setDividerHeight(0);
         }
         lv.setSelector(new ColorDrawable(Color.TRANSPARENT));
-        lv.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        lv.setClipToPadding(false);
+        if (lv.getClipToPadding()) {
+            lv.setClipToPadding(false);
+        }
         attachCouiOverscroll(lv);
 
         normalizeSettingsHorizontalGutter(lv);
-        int appBarBot = (act != null) ? getSettingsAppBarBottom(act) : dp(ctx, 132);
+        int appBarBot = getSettingsAppBarBottomForView(lv, act);
         int topPad = appBarBot + dp(ctx, 12);
         int botPad = dp(ctx, 28);
         int oldTop = lv.getPaddingTop();
@@ -4042,19 +4373,10 @@ public final class CouiBrowserUiEnhancer {
             }
         }
 
-        // Compute exact remaining horizontal margin needed for cardTarget to hit 16dp from screen edges!
-        // Chromium's WideDisplayPadding may re-pad ListFragment's #ff0003 container to 16dp (52px on 520dpi)
-        // via OnLayoutChangeListener; subtracting lv's existing screen offset prevents 16dp + 16dp = 32dp double-inset!
-        int wantEdge = dp(ctx, 16);
-        int[] lvLoc = new int[2];
-        lv.getLocationInWindow(lvLoc);
-        int screenW = ctx.getResources().getDisplayMetrics().widthPixels;
-        int alreadyL = Math.max(0, lvLoc[0]);
-        int alreadyR = (lv.getWidth() > 0 && screenW > 0)
-                ? Math.max(0, screenW - (lvLoc[0] + lv.getWidth()))
-                : alreadyL;
-        int needCardMarginL = Math.max(0, wantEdge - alreadyL);
-        int needCardMarginR = Math.max(0, wantEdge - alreadyR);
+        // Round 18: Static fixed 16dp horizontal card margins (Lhki.f WideDisplayPadding is neutralized
+        // in smali and wrapper gutters are 0px; NEVER call getLocationInWindow() during page slides!).
+        int wantMargin = dp(ctx, 16);
+        int headerPadL = dp(ctx, 32);
         int childCount = lv.getChildCount();
         for (int i = 0; i < childCount; i++) {
             View row = lv.getChildAt(i);
@@ -4062,7 +4384,6 @@ public final class CouiBrowserUiEnhancer {
 
             View cardTarget = row.findViewById(ID_SE_CARD_CONTAINER);
             if (cardTarget == null) cardTarget = row;
-            // Remove extra outer row horizontal padding & enforce exact 16dp screen-edge card gutters!
             if (row != cardTarget) {
                 if (row.getPaddingLeft() != 0 || row.getPaddingRight() != 0) {
                     row.setPadding(0, row.getPaddingTop(), 0, row.getPaddingBottom());
@@ -4070,26 +4391,25 @@ public final class CouiBrowserUiEnhancer {
                 ViewGroup.LayoutParams clp = cardTarget.getLayoutParams();
                 if (clp instanceof ViewGroup.MarginLayoutParams) {
                     ViewGroup.MarginLayoutParams cmlp = (ViewGroup.MarginLayoutParams) clp;
-                    if (cmlp.leftMargin != needCardMarginL || cmlp.rightMargin != needCardMarginR
+                    if (cmlp.leftMargin != wantMargin || cmlp.rightMargin != wantMargin
+                            || cmlp.getMarginStart() != wantMargin || cmlp.getMarginEnd() != wantMargin
                             || cmlp.width != ViewGroup.LayoutParams.MATCH_PARENT) {
-                        cmlp.leftMargin = needCardMarginL;
-                        cmlp.rightMargin = needCardMarginR;
-                        cmlp.setMarginStart(needCardMarginL);
-                        cmlp.setMarginEnd(needCardMarginR);
+                        cmlp.leftMargin = wantMargin;
+                        cmlp.rightMargin = wantMargin;
+                        cmlp.setMarginStart(wantMargin);
+                        cmlp.setMarginEnd(wantMargin);
                         cmlp.width = ViewGroup.LayoutParams.MATCH_PARENT;
                         cardTarget.setLayoutParams(cmlp);
                     }
                 }
             } else if (row instanceof TextView && !row.isClickable()) {
-                // Section header row inside SearchEngineSettings ("Recently visited", etc.): align cleanly at 32dp total screen inset
+                // Section header row inside SearchEngineSettings ("Recently visited", etc.): static 32dp left inset
                 TextView htv = (TextView) row;
                 htv.setTextColor(dark ? 0x8AFFFFFF : 0xFF7F7F7F);
                 htv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
                 htv.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-                int hPadL = Math.max(0, dp(ctx, 32) - alreadyL);
-                int hPadR = Math.max(0, dp(ctx, 16) - alreadyR);
-                if (htv.getPaddingLeft() != hPadL || htv.getPaddingRight() != hPadR) {
-                    htv.setPadding(hPadL, dp(ctx, 14), hPadR, dp(ctx, 8));
+                if (htv.getPaddingLeft() != headerPadL || htv.getPaddingRight() != wantMargin) {
+                    htv.setPadding(headerPadL, dp(ctx, 14), wantMargin, dp(ctx, 8));
                 }
             }
 
@@ -4299,21 +4619,28 @@ public final class CouiBrowserUiEnhancer {
             int canvasColor = dark ? 0xFF000000 : 0xFFF0F1F3;
             recyclerView.setBackgroundColor(canvasColor);
             Activity act = unwrapActivity(ctx);
-            applySettingsRecyclerPadding(recyclerView, act);
-            attachCouiOverscroll(recyclerView);
+            if (!sSettingsSlideAnimating) {
+                applySettingsRecyclerPadding(recyclerView, act);
+                attachCouiOverscroll(recyclerView);
 
-            // Re-keep top bar chrome (status bar, root large title vs inline title, persistent search pill & blur) synced
-            if (act != null) {
-                styleEdgeToEdgeBaseLayout(act, canvasColor);
-                syncSettingsHeaderAndSearch(act, dark);
-                View root = act.findViewById(ID_SETTINGS_ACTIVITY);
-                if (root != null) {
-                    View blur = root.findViewWithTag(SETTINGS_TOP_BLUR_TAG);
-                    if (blur instanceof CouiTopProgressiveBlurView) {
-                        ((CouiTopProgressiveBlurView) blur).syncHeight();
-                        blur.invalidate();
+                // Re-keep top bar chrome (status bar, root large title vs inline title, persistent search pill & blur) synced
+                if (act != null) {
+                    styleEdgeToEdgeBaseLayout(act, canvasColor);
+                    syncSettingsHeaderAndSearch(act, dark);
+                    View root = act.findViewById(ID_SETTINGS_ACTIVITY);
+                    if (root != null) {
+                        View blur = root.findViewWithTag(SETTINGS_TOP_BLUR_TAG);
+                        if (blur instanceof CouiTopProgressiveBlurView) {
+                            ((CouiTopProgressiveBlurView) blur).syncHeight();
+                            blur.invalidate();
+                        }
                     }
                 }
+            }
+            // Keep any newly attached/recycled children synced with active ColorOS 17 overscroll offset
+            CouiOverscrollController osCtrl = sOverscrollControllers.get(recyclerView);
+            if (osCtrl != null && Math.abs(osCtrl.overscrollY) > 0.1f) {
+                osCtrl.syncChildrenTranslation();
             }
 
             Field fList = ec3.getClass().getDeclaredField("b");
@@ -4385,6 +4712,16 @@ public final class CouiBrowserUiEnhancer {
     private static RowKind stylePreferenceItemView(View itemView, boolean dark, Object bc3) {
         if (itemView == null) return RowKind.OTHER;
         Context ctx = itemView.getContext();
+
+        // Round 18: Accessibility PageZoomPreference ("Default zoom", "Text size contrast", "Preview")
+        // wraps inner ContainedLinearLayout cards inside a full-width LinearLayout (res/6_.xml).
+        if (itemView instanceof ViewGroup
+                && (itemView.findViewById(ID_PAGE_ZOOM_SECTION) != null
+                    || itemView.findViewById(ID_PAGE_ZOOM_PREVIEW_CARD) != null)) {
+            styleAccessibilityZoomCards((ViewGroup) itemView, dark);
+            return RowKind.OTHER;
+        }
+
         int bgCol = -1;
         if (bc3 != null) {
             try {
@@ -4394,37 +4731,25 @@ public final class CouiBrowserUiEnhancer {
             } catch (Throwable ignored) {}
         }
 
-        // Enforce uniform 16dp screen-edge horizontal card margins across ALL Settings cards
-        // (compensating if parent RecyclerView already has a screen offset from WideDisplayPadding)
+        // Round 18: Static fixed 16dp horizontal margins across ALL Settings cards
+        // (ZERO getLocationInWindow() math — cards start & stay at exact 16dp from frame 1 of slide-in!).
         if (bgCol != 0) {
-            int wantEdge = dp(ctx, 16);
-            int alreadyL = 0;
-            int alreadyR = 0;
-            ViewParent vp = itemView.getParent();
-            if (vp instanceof View) {
-                View pv = (View) vp;
-                int[] pLoc = new int[2];
-                pv.getLocationInWindow(pLoc);
-                int screenW = ctx.getResources().getDisplayMetrics().widthPixels;
-                alreadyL = Math.max(0, pLoc[0] + pv.getPaddingLeft());
-                alreadyR = (pv.getWidth() > 0 && screenW > 0)
-                        ? Math.max(0, screenW - (pLoc[0] + pv.getWidth() - pv.getPaddingRight()))
-                        : alreadyL;
-            }
-            int wantMarginL = Math.max(0, wantEdge - alreadyL);
-            int wantMarginR = Math.max(0, wantEdge - alreadyR);
+            int wantMargin = dp(ctx, 16);
             ViewGroup.LayoutParams ilp = itemView.getLayoutParams();
             if (ilp instanceof ViewGroup.MarginLayoutParams) {
                 ViewGroup.MarginLayoutParams imlp = (ViewGroup.MarginLayoutParams) ilp;
-                if (imlp.leftMargin != wantMarginL || imlp.rightMargin != wantMarginR) {
-                    imlp.leftMargin = wantMarginL;
-                    imlp.rightMargin = wantMarginR;
+                if (imlp.leftMargin != wantMargin || imlp.rightMargin != wantMargin
+                        || imlp.getMarginStart() != wantMargin || imlp.getMarginEnd() != wantMargin) {
+                    imlp.leftMargin = wantMargin;
+                    imlp.rightMargin = wantMargin;
+                    imlp.setMarginStart(wantMargin);
+                    imlp.setMarginEnd(wantMargin);
                     itemView.setLayoutParams(imlp);
                 }
             }
         }
 
-        // Handle RadioButtonWithDescriptionLayout preference cards (Address bar, Theme, Cookies, WebRTC, etc.)
+        // Handle RadioButtonWithDescriptionLayout preference cards (Address bar, Theme, Homepage, Cookies, WebRTC, etc.)
         if (itemView instanceof ViewGroup) {
             View radioGroup = itemView.findViewById(ID_ADDRESS_BAR_RADIO_GROUP);
             if (radioGroup == null) {
@@ -4455,8 +4780,9 @@ public final class CouiBrowserUiEnhancer {
         TextView summaryTv = itemView.findViewById(android.R.id.summary);
         CompoundButton toggle = findCompoundButton(itemView);
 
-        // Category header row (PreferenceCategory has bgCol == 0)
-        if (bgCol == 0 || (titleTv != null && !itemView.isClickable() && toggle == null && summaryTv == null)) {
+        // Category header row (PreferenceCategory has bgCol == 0 and no toggle)
+        if ((bgCol == 0 && toggle == null)
+                || (titleTv != null && !itemView.isClickable() && toggle == null && summaryTv == null)) {
             if (titleTv != null) {
                 titleTv.setTextColor(dark ? 0x8AFFFFFF : 0xFF7F7F7F);
                 titleTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
@@ -4464,7 +4790,9 @@ public final class CouiBrowserUiEnhancer {
                 titleTv.setAllCaps(false);
             }
             int padH = dp(ctx, 16);
-            itemView.setPadding(padH, dp(ctx, 10), padH, dp(ctx, 6));
+            if (itemView.getPaddingLeft() != padH || itemView.getPaddingRight() != padH) {
+                itemView.setPadding(padH, dp(ctx, 10), padH, dp(ctx, 6));
+            }
             return RowKind.CATEGORY_HEADER;
         }
 
@@ -4482,6 +4810,28 @@ public final class CouiBrowserUiEnhancer {
         }
 
         if (toggle != null && toggle.getVisibility() == View.VISIBLE) {
+            // Ensure standalone toggle preferences (e.g. Homepage "On" ChromeSwitchPreference) ALWAYS have
+            // static 16dp horizontal margins and a 20dp squircle card background even if bc3 had bgCol == 0!
+            int wantMargin = dp(ctx, 16);
+            ViewGroup.LayoutParams ilp = itemView.getLayoutParams();
+            if (ilp instanceof ViewGroup.MarginLayoutParams) {
+                ViewGroup.MarginLayoutParams imlp = (ViewGroup.MarginLayoutParams) ilp;
+                if (imlp.leftMargin != wantMargin || imlp.rightMargin != wantMargin
+                        || imlp.getMarginStart() != wantMargin || imlp.getMarginEnd() != wantMargin) {
+                    imlp.leftMargin = wantMargin;
+                    imlp.rightMargin = wantMargin;
+                    imlp.setMarginStart(wantMargin);
+                    imlp.setMarginEnd(wantMargin);
+                    itemView.setLayoutParams(imlp);
+                }
+            }
+            if (bgCol == 0 && itemView.getBackground() == null) {
+                GradientDrawable cardBg = new GradientDrawable();
+                cardBg.setShape(GradientDrawable.RECTANGLE);
+                cardBg.setCornerRadius(dpF(ctx, 20f));
+                cardBg.setColor(dark ? 0xFF1C1C1E : 0xFFFFFFFF);
+                itemView.setBackground(cardBg);
+            }
             if (toggle instanceof RadioButton) {
                 styleCouiRadioButton((RadioButton) toggle, dark);
             } else if (toggle instanceof CheckBox) {
@@ -4507,6 +4857,130 @@ public final class CouiBrowserUiEnhancer {
         }
 
         return RowKind.OTHER;
+    }
+
+    /**
+     * Round 18: Aligns Accessibility PageZoomPreference ("Default zoom", "Text size contrast", and "Preview"
+     * ContainedLinearLayout cards in res/6_.xml) to exact static 16dp horizontal gutters matching
+     * "Saved zoom for sites" below, with 20dp squircle #FFFFFF/#1C1C1E cards and clean COUI typography.
+     */
+    private static void styleAccessibilityZoomCards(ViewGroup rootItem, boolean dark) {
+        Context ctx = rootItem.getContext();
+        // Zero outer wrapper margins/padding so inner cards land at exact 16dp from screen edges
+        if (rootItem.getPaddingLeft() != 0 || rootItem.getPaddingRight() != 0) {
+            rootItem.setPadding(0, rootItem.getPaddingTop(), 0, rootItem.getPaddingBottom());
+        }
+        ViewGroup.LayoutParams rlp = rootItem.getLayoutParams();
+        if (rlp instanceof ViewGroup.MarginLayoutParams) {
+            ViewGroup.MarginLayoutParams rmlp = (ViewGroup.MarginLayoutParams) rlp;
+            if (rmlp.leftMargin != 0 || rmlp.rightMargin != 0
+                    || rmlp.getMarginStart() != 0 || rmlp.getMarginEnd() != 0
+                    || rmlp.width != ViewGroup.LayoutParams.MATCH_PARENT) {
+                rmlp.leftMargin = 0;
+                rmlp.rightMargin = 0;
+                rmlp.setMarginStart(0);
+                rmlp.setMarginEnd(0);
+                rmlp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+                rootItem.setLayoutParams(rmlp);
+            }
+        }
+
+        int marginH = dp(ctx, 16);
+        int gapBot = dp(ctx, 12);
+        int pad = dp(ctx, 16);
+        int titleCol = dark ? 0xE6FFFFFF : 0xFF191919;
+        int summaryCol = dark ? 0x73FFFFFF : 0xFF8C8C8C;
+        int accentCol = dark ? 0xFF1A8CFF : 0xFF007AFF;
+        int cardCol = dark ? 0xFF1C1C1E : 0xFFFFFFFF;
+
+        int[] cardIds = {ID_PAGE_ZOOM_SECTION, ID_TEXT_CONTRAST_SECTION, ID_PAGE_ZOOM_PREVIEW_CARD};
+        for (int cid : cardIds) {
+            View card = rootItem.findViewById(cid);
+            if (!(card instanceof ViewGroup) || card.getVisibility() != View.VISIBLE) continue;
+
+            ViewGroup.LayoutParams clp = card.getLayoutParams();
+            if (clp instanceof ViewGroup.MarginLayoutParams) {
+                ViewGroup.MarginLayoutParams cmlp = (ViewGroup.MarginLayoutParams) clp;
+                if (cmlp.leftMargin != marginH || cmlp.rightMargin != marginH
+                        || cmlp.getMarginStart() != marginH || cmlp.getMarginEnd() != marginH
+                        || cmlp.bottomMargin != gapBot
+                        || cmlp.width != ViewGroup.LayoutParams.MATCH_PARENT) {
+                    cmlp.leftMargin = marginH;
+                    cmlp.rightMargin = marginH;
+                    cmlp.setMarginStart(marginH);
+                    cmlp.setMarginEnd(marginH);
+                    cmlp.bottomMargin = gapBot;
+                    cmlp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+                    card.setLayoutParams(cmlp);
+                }
+            }
+            if (card.getPaddingLeft() != pad || card.getPaddingRight() != pad
+                    || card.getPaddingTop() != pad || card.getPaddingBottom() != pad) {
+                card.setPadding(pad, pad, pad, pad);
+            }
+
+            String bgTag = "coui_zoom_card_" + (dark ? "d" : "l");
+            if (!bgTag.equals(card.getTag())) {
+                GradientDrawable bg = new GradientDrawable();
+                bg.setShape(GradientDrawable.RECTANGLE);
+                bg.setCornerRadius(dpF(ctx, 20f));
+                bg.setColor(cardCol);
+                card.setBackground(bg);
+                card.setTag(bgTag);
+            }
+
+            ViewGroup cg = (ViewGroup) card;
+            int tvIdx = 0;
+            for (int i = 0; i < cg.getChildCount(); i++) {
+                View ch = cg.getChildAt(i);
+                if (ch instanceof TextView) {
+                    TextView tv = (TextView) ch;
+                    int tid = tv.getId();
+                    if (tid == ID_PAGE_ZOOM_VALUE_TEXT || tid == ID_TEXT_CONTRAST_VALUE_TEXT) {
+                        tv.setTextColor(accentCol);
+                        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
+                        tv.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+                    } else if (tvIdx == 0) {
+                        tv.setTextColor(titleCol);
+                        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f);
+                        tv.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+                    } else {
+                        tv.setTextColor(summaryCol);
+                        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+                        tv.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+                    }
+                    tvIdx++;
+                }
+            }
+        }
+
+        // Clean COUI styling for - / + buttons and preview content
+        int[] btnIds = {ID_PAGE_ZOOM_DEC, ID_PAGE_ZOOM_INC, ID_TEXT_CONTRAST_DEC, ID_TEXT_CONTRAST_INC};
+        for (int bid : btnIds) {
+            View b = rootItem.findViewById(bid);
+            if (b instanceof ImageView) {
+                ImageView iv = (ImageView) b;
+                iv.setImageTintList(ColorStateList.valueOf(iv.isEnabled() ? titleCol : summaryCol));
+            }
+        }
+        View previewImg = rootItem.findViewById(ID_PAGE_ZOOM_PREVIEW_IMG);
+        if (previewImg instanceof ImageView) {
+            ColorStateList iconTint = ColorStateList.valueOf(dark ? 0xCCFFFFFF : 0xFF3C4043);
+            ((ImageView) previewImg).setImageTintList(iconTint);
+            previewImg.setBackgroundTintList(iconTint);
+        }
+        int[] prevTextIds = {ID_PAGE_ZOOM_PREVIEW_LARGE, ID_PAGE_ZOOM_PREVIEW_MED, ID_PAGE_ZOOM_PREVIEW_SMALL};
+        for (int ptid : prevTextIds) {
+            View pt = rootItem.findViewById(ptid);
+            if (pt instanceof TextView) {
+                ((TextView) pt).setTextColor(ptid == ID_PAGE_ZOOM_PREVIEW_SMALL ? summaryCol : titleCol);
+            }
+        }
+        // Trigger invalidate on sliders so they redraw cleanly in Light/Dark mode
+        View s1 = rootItem.findViewById(ID_PAGE_ZOOM_SLIDER);
+        if (s1 != null) s1.invalidate();
+        View s2 = rootItem.findViewById(ID_TEXT_CONTRAST_SLIDER);
+        if (s2 != null) s2.invalidate();
     }
 
     private static View findViewByClassNameContains(ViewGroup vg, String token) {
@@ -4616,117 +5090,369 @@ public final class CouiBrowserUiEnhancer {
     }
 
     /**
-     * Attaches authentic ColorOS 17 SpringOverScroller RK4 cushioned vertical overscroll + edge haptic 307
-     * to Settings RecyclerViews, ListViews, ScrollViews, Tab Switcher, and NTP scroll containers.
-     * Matches overflow-coloros.mp4 (~500-580ms viscous cushioned rebound, smooth progressive drag resistance,
-     * 120Hz Choreographer-stepped via libtitanium_rive.so RK4 solver, 0% idle CPU when settled).
+     * Round 18: Expressive ColorOS 17 SpringOverScroller RK4 vertical overscroll (coloros-expressive-scroll.mp4 1:1).
+     * - Enables View.OVER_SCROLL_ALWAYS and injects custom CouiOverscrollEdgeEffect directly into
+     *   RecyclerView.k0 (top) & m0 (bottom), plus ListView/ScrollView/NestedScrollView edge effects!
+     * - Handles BOTH manual over-pull (onPullDistance + reversible getDistance) AND high-velocity fling
+     *   impacts (onAbsorb -> 56..116dp RK4 cushioned bounce over ~500-580ms + ROM haptic 307).
+     * - Translates child views cleanly (zero pointer-coordinate oscillation, zero stock stretch glow).
+     * - Falls back to a VelocityTracker-powered touch/fling overscroll listener if framework reflection is blocked.
      */
     private static void attachCouiOverscroll(final ViewGroup rv) {
-        if (rv == null || OVERSCROLL_TAG.equals(rv.getTag())) return;
-        rv.setTag(OVERSCROLL_TAG);
-        rv.setOnTouchListener(new View.OnTouchListener() {
-            private float lastY = 0f;
-            private float overscrollY = 0f;
-            private boolean isOverscrolling = false;
-            private boolean springRunning = false;
-            private long lastFrameNanos = 0L;
-            private final float[] rk4State = new float[3]; // [pos, vel, tmpPos]
+        if (rv == null) return;
+        if (rv.getOverScrollMode() != View.OVER_SCROLL_ALWAYS) {
+            rv.setOverScrollMode(View.OVER_SCROLL_ALWAYS);
+        }
+        CouiOverscrollController ctrl = sOverscrollControllers.get(rv);
+        if (ctrl == null) {
+            ctrl = new CouiOverscrollController(rv);
+            sOverscrollControllers.put(rv, ctrl);
+        }
+        ctrl.ensureWired();
+    }
 
-            private final Choreographer.FrameCallback springCallback = new Choreographer.FrameCallback() {
-                @Override
-                public void doFrame(long frameTimeNanos) {
-                    if (!springRunning) return;
-                    if (!rv.isAttachedToWindow()) {
-                        springRunning = false;
-                        return;
-                    }
-                    float dt = (lastFrameNanos == 0L)
-                            ? 0.008f
-                            : Math.max(0.004f, Math.min(0.024f, (frameTimeNanos - lastFrameNanos) / 1_000_000_000f));
-                    lastFrameNanos = frameTimeNanos;
-                    boolean active = TitaniumRiveEngine.stepOverscrollRk4(rk4State, dt);
-                    overscrollY = rk4State[0];
-                    applyChildTranslationY(rv, overscrollY);
-                    if (active) {
-                        Choreographer.getInstance().postFrameCallback(this);
-                    } else {
-                        springRunning = false;
-                        overscrollY = 0f;
-                        applyChildTranslationY(rv, 0f);
-                    }
-                }
-            };
+    private static final class CouiOverscrollController {
+        final ViewGroup rv;
+        final CouiOverscrollEdgeEffect topEdge;
+        final CouiOverscrollEdgeEffect bottomEdge;
+        float overscrollY = 0f;
+        boolean springRunning = false;
+        boolean absorbRunning = false;
+        boolean hapticFired = false;
+        long lastFrameNanos = 0L;
+        final float[] rk4State = new float[3]; // [pos, vel, tmpPos]
+        boolean fallbackAttached = false;
 
-            private void cancelSpring() {
-                if (springRunning) {
+        private final Choreographer.FrameCallback springCallback = new Choreographer.FrameCallback() {
+            @Override
+            public void doFrame(long frameTimeNanos) {
+                if (!springRunning) return;
+                if (!rv.isAttachedToWindow()) {
                     springRunning = false;
-                    Choreographer.getInstance().removeFrameCallback(springCallback);
-                }
-            }
-
-            private void startSpringBack() {
-                cancelSpring();
-                if (Math.abs(overscrollY) <= 0.5f) {
-                    overscrollY = 0f;
-                    applyChildTranslationY(rv, 0f);
+                    absorbRunning = false;
                     return;
                 }
-                rk4State[0] = overscrollY;
-                rk4State[1] = 0f;
-                rk4State[2] = overscrollY;
-                lastFrameNanos = 0L;
-                springRunning = true;
-                Choreographer.getInstance().postFrameCallback(springCallback);
-            }
-
-            @Override
-            public boolean onTouch(View v, MotionEvent event) {
-                switch (event.getActionMasked()) {
-                    case MotionEvent.ACTION_DOWN:
-                        lastY = event.getRawY();
-                        cancelSpring();
-                        break;
-                    case MotionEvent.ACTION_MOVE:
-                        float curY = event.getRawY();
-                        float dy = curY - lastY;
-                        lastY = curY;
-                        boolean atTop = !rv.canScrollVertically(-1);
-                        boolean atBottom = !rv.canScrollVertically(1);
-                        if ((atTop && dy > 0 && overscrollY >= 0)
-                                || (atBottom && dy < 0 && overscrollY <= 0)
-                                || isOverscrolling) {
-                            if (!isOverscrolling && Math.abs(dy) > 1.5f) {
-                                isOverscrolling = true;
-                                performCouiHapticCode(rv, COUI_HAPTIC_OVERSCROLL);
-                            }
-                            // Exact ColorOS 17 progressive drag resistance: 0.40 * (1 - |offset| / screenH)
-                            float screenH = Math.max(dpF(rv.getContext(), 600f),
-                                    rv.getResources().getDisplayMetrics().heightPixels);
-                            float ratio = Math.min(Math.abs(overscrollY) / screenH, 0.92f);
-                            float factor = 0.40f * (1.0f - ratio);
-                            overscrollY += dy * factor;
-                            if ((atTop && !atBottom && overscrollY < 0f)
-                                    || (atBottom && !atTop && overscrollY > 0f)) {
-                                overscrollY = 0f;
-                                isOverscrolling = false;
-                            }
-                            applyChildTranslationY(rv, overscrollY);
-                        }
-                        break;
-                    case MotionEvent.ACTION_UP:
-                    case MotionEvent.ACTION_CANCEL:
-                        isOverscrolling = false;
-                        if (Math.abs(overscrollY) > 0.5f) {
-                            startSpringBack();
-                        } else {
-                            overscrollY = 0f;
-                            applyChildTranslationY(rv, 0f);
-                        }
-                        break;
+                float dt = (lastFrameNanos == 0L)
+                        ? 0.008f
+                        : Math.max(0.004f, Math.min(0.024f, (frameTimeNanos - lastFrameNanos) / 1_000_000_000f));
+                lastFrameNanos = frameTimeNanos;
+                boolean active = TitaniumRiveEngine.stepOverscrollRk4(rk4State, dt);
+                overscrollY = rk4State[0];
+                applyChildTranslationY(rv, overscrollY);
+                if (active) {
+                    Choreographer.getInstance().postFrameCallback(this);
+                } else {
+                    springRunning = false;
+                    absorbRunning = false;
+                    hapticFired = false;
+                    overscrollY = 0f;
+                    applyChildTranslationY(rv, 0f);
                 }
-                return false;
             }
-        });
+        };
+
+        CouiOverscrollController(ViewGroup rv) {
+            this.rv = rv;
+            Context ctx = rv.getContext();
+            this.topEdge = new CouiOverscrollEdgeEffect(ctx, this, true);
+            this.bottomEdge = new CouiOverscrollEdgeEffect(ctx, this, false);
+        }
+
+        void ensureWired() {
+            if (wireEdgeEffects()) {
+                return;
+            }
+            if (!fallbackAttached) {
+                fallbackAttached = true;
+                attachFallbackTouchListener();
+            }
+        }
+
+        private boolean wireEdgeEffects() {
+            String clsName = rv.getClass().getName();
+            try {
+                if (clsName.contains("RecyclerView")) {
+                    Field fTop = findFieldUp(rv.getClass(), "k0");
+                    Field fBot = findFieldUp(rv.getClass(), "m0");
+                    if (fTop != null && fBot != null
+                            && EdgeEffect.class.isAssignableFrom(fTop.getType())
+                            && EdgeEffect.class.isAssignableFrom(fBot.getType())) {
+                        if (fTop.get(rv) != topEdge) fTop.set(rv, topEdge);
+                        if (fBot.get(rv) != bottomEdge) fBot.set(rv, bottomEdge);
+                        return true;
+                    }
+                } else {
+                    Field fTop = findFieldUp(rv.getClass(), "mEdgeGlowTop");
+                    Field fBot = findFieldUp(rv.getClass(), "mEdgeGlowBottom");
+                    if (fTop != null && fBot != null) {
+                        if (fTop.get(rv) != topEdge) fTop.set(rv, topEdge);
+                        if (fBot.get(rv) != bottomEdge) fBot.set(rv, bottomEdge);
+                        return true;
+                    }
+                }
+            } catch (Throwable ignored) {}
+            return false;
+        }
+
+        void syncChildrenTranslation() {
+            for (int i = 0; i < rv.getChildCount(); i++) {
+                View c = rv.getChildAt(i);
+                if (c != null && c.getTranslationY() != overscrollY) {
+                    c.setTranslationY(overscrollY);
+                }
+            }
+        }
+
+        void cancelSpring() {
+            if (springRunning) {
+                springRunning = false;
+                absorbRunning = false;
+                Choreographer.getInstance().removeFrameCallback(springCallback);
+            }
+        }
+
+        private float getViewportH() {
+            int h = rv.getHeight();
+            if (h > 0) return (float) h;
+            return Math.max(dpF(rv.getContext(), 600f), rv.getResources().getDisplayMetrics().heightPixels);
+        }
+
+        private float getMaxStretchPx() {
+            float vh = getViewportH();
+            return Math.min(dpF(rv.getContext(), 160f), Math.max(dpF(rv.getContext(), 110f), vh * 0.3731f));
+        }
+
+        float getNormalizedDistance(boolean isTop) {
+            float vh = Math.max(1f, getViewportH());
+            if (isTop) {
+                return overscrollY > 0.5f ? (overscrollY / vh) : 0f;
+            }
+            return overscrollY < -0.5f ? (-overscrollY / vh) : 0f;
+        }
+
+        float onPullDistance(boolean isTop, float deltaDistance) {
+            if (Math.abs(deltaDistance) < 1e-6f) return 0f;
+            cancelSpring();
+            float vh = getViewportH();
+            float maxStretch = getMaxStretchPx();
+            float sign = isTop ? 1f : -1f;
+            float deltaPx = deltaDistance * vh;
+
+            if (deltaPx > 0f) {
+                if (!hapticFired && Math.abs(overscrollY) < 1f) {
+                    hapticFired = true;
+                    performCouiHapticCode(rv, COUI_HAPTIC_OVERSCROLL);
+                }
+                float curAbs = Math.max(0f, overscrollY * sign);
+                float ratio = Math.min(curAbs / Math.max(1f, maxStretch), 0.96f);
+                float factor = 0.56f * (1.0f - ratio * 0.85f);
+                float nextAbs = Math.min(maxStretch, curAbs + deltaPx * factor);
+                overscrollY = nextAbs * sign;
+                applyChildTranslationY(rv, overscrollY);
+                return deltaDistance;
+            } else {
+                // Unwinding back toward 0 while finger reverses without lifting
+                float curAbs = Math.max(0f, overscrollY * sign);
+                if (curAbs <= 0.01f) {
+                    return 0f;
+                }
+                float unwindPx = -deltaPx * 0.62f;
+                if (unwindPx >= curAbs) {
+                    float consumedFrac = (curAbs / 0.62f) / vh;
+                    overscrollY = 0f;
+                    hapticFired = false;
+                    applyChildTranslationY(rv, 0f);
+                    return -Math.min(Math.abs(deltaDistance), consumedFrac);
+                } else {
+                    overscrollY = (curAbs - unwindPx) * sign;
+                    applyChildTranslationY(rv, overscrollY);
+                    return deltaDistance;
+                }
+            }
+        }
+
+        void onAbsorb(boolean isTop, int velocity) {
+            Context ctx = rv.getContext();
+            float sign = isTop ? 1f : -1f;
+            float vAbs = Math.max(1200f, Math.min(20000f, Math.abs((float) velocity)));
+            float t = (vAbs - 1200f) / 16800f;
+            float curved = (float) Math.sqrt(Math.max(0f, Math.min(1f, t)));
+            float targetPeakPx = dpF(ctx, 56f) + dpF(ctx, 60f) * curved; // 56dp..116dp expressive peak
+            float maxCap = Math.min(dpF(ctx, 136f), getViewportH() * 0.35f);
+            targetPeakPx = Math.min(targetPeakPx, maxCap);
+
+            float curSameDir = Math.max(0f, overscrollY * sign);
+            float headroom = Math.max(dpF(ctx, 20f), maxCap - curSameDir);
+            float effectivePeak = Math.min(targetPeakPx, headroom);
+
+            if (!hapticFired) {
+                hapticFired = true;
+                performCouiHapticCode(rv, COUI_HAPTIC_OVERSCROLL);
+            }
+            cancelSpring();
+            rk4State[0] = overscrollY;
+            rk4State[1] = sign * effectivePeak * 45.0f; // Calibrated for kFriction=37.57, kTension=198.34
+            rk4State[2] = overscrollY;
+            lastFrameNanos = 0L;
+            absorbRunning = true;
+            springRunning = true;
+            Choreographer.getInstance().postFrameCallback(springCallback);
+        }
+
+        void onRelease(boolean isTop) {
+            if (absorbRunning) return;
+            if (Math.abs(overscrollY) <= 0.5f) {
+                overscrollY = 0f;
+                hapticFired = false;
+                applyChildTranslationY(rv, 0f);
+                return;
+            }
+            cancelSpring();
+            rk4State[0] = overscrollY;
+            rk4State[1] = 0f;
+            rk4State[2] = overscrollY;
+            lastFrameNanos = 0L;
+            absorbRunning = false;
+            springRunning = true;
+            Choreographer.getInstance().postFrameCallback(springCallback);
+        }
+
+        boolean isFinished(boolean isTop) {
+            if (springRunning) return false;
+            return isTop ? (overscrollY <= 0.5f) : (overscrollY >= -0.5f);
+        }
+
+        void finish() {
+            cancelSpring();
+            overscrollY = 0f;
+            hapticFired = false;
+            applyChildTranslationY(rv, 0f);
+        }
+
+        /** VelocityTracker-powered fallback for ListView/ScrollView when framework EdgeEffect fields are hidden. */
+        private void attachFallbackTouchListener() {
+            rv.setOnTouchListener(new View.OnTouchListener() {
+                private float lastY = 0f;
+                private boolean isDraggingEdge = false;
+                private VelocityTracker vt = null;
+
+                @Override
+                public boolean onTouch(View v, MotionEvent event) {
+                    if (vt == null) vt = VelocityTracker.obtain();
+                    MotionEvent raw = MotionEvent.obtain(event);
+                    raw.setLocation(event.getRawX(), event.getRawY());
+                    vt.addMovement(raw);
+                    raw.recycle();
+
+                    switch (event.getActionMasked()) {
+                        case MotionEvent.ACTION_DOWN:
+                            lastY = event.getRawY();
+                            isDraggingEdge = false;
+                            cancelSpring();
+                            break;
+                        case MotionEvent.ACTION_MOVE: {
+                            float curY = event.getRawY();
+                            float dy = curY - lastY;
+                            lastY = curY;
+                            boolean atTop = !rv.canScrollVertically(-1);
+                            boolean atBot = !rv.canScrollVertically(1);
+                            if ((atTop && dy > 0 && overscrollY >= 0)
+                                    || (atBot && dy < 0 && overscrollY <= 0)
+                                    || isDraggingEdge) {
+                                isDraggingEdge = true;
+                                boolean topDir = (overscrollY > 0f) || (overscrollY == 0f && dy > 0f);
+                                float dist = (topDir ? dy : -dy) / Math.max(1f, getViewportH());
+                                onPullDistance(topDir, dist);
+                                if (Math.abs(overscrollY) <= 0.5f) {
+                                    isDraggingEdge = false;
+                                }
+                            }
+                            break;
+                        }
+                        case MotionEvent.ACTION_UP:
+                        case MotionEvent.ACTION_CANCEL: {
+                            vt.computeCurrentVelocity(1000, 20000f);
+                            float vy = vt.getYVelocity();
+                            vt.recycle();
+                            vt = null;
+                            boolean atTop = !rv.canScrollVertically(-1);
+                            boolean atBot = !rv.canScrollVertically(1);
+                            isDraggingEdge = false;
+                            if (atTop && vy > 1200f) {
+                                onAbsorb(true, Math.round(vy));
+                            } else if (atBot && vy < -1200f) {
+                                onAbsorb(false, Math.round(-vy));
+                            } else if (Math.abs(overscrollY) > 0.5f) {
+                                onRelease(overscrollY > 0f);
+                            } else {
+                                overscrollY = 0f;
+                                applyChildTranslationY(rv, 0f);
+                            }
+                            break;
+                        }
+                    }
+                    return false;
+                }
+            });
+        }
+    }
+
+    /** Custom EdgeEffect wired into RecyclerView.k0/m0 (top/bottom) driving RK4 child-translation overscroll. */
+    private static final class CouiOverscrollEdgeEffect extends EdgeEffect {
+        private final CouiOverscrollController ctrl;
+        private final boolean isTop;
+
+        CouiOverscrollEdgeEffect(Context ctx, CouiOverscrollController ctrl, boolean isTop) {
+            super(ctx);
+            this.ctrl = ctrl;
+            this.isTop = isTop;
+        }
+
+        @Override
+        public float getDistance() {
+            return ctrl.getNormalizedDistance(isTop);
+        }
+
+        @Override
+        public float onPullDistance(float deltaDistance, float displacement) {
+            return ctrl.onPullDistance(isTop, deltaDistance);
+        }
+
+        @Override
+        public void onPull(float deltaDistance, float displacement) {
+            ctrl.onPullDistance(isTop, deltaDistance);
+        }
+
+        @Override
+        public void onPull(float deltaDistance) {
+            ctrl.onPullDistance(isTop, deltaDistance);
+        }
+
+        @Override
+        public void onAbsorb(int velocity) {
+            ctrl.onAbsorb(isTop, velocity);
+        }
+
+        @Override
+        public void onRelease() {
+            ctrl.onRelease(isTop);
+        }
+
+        @Override
+        public boolean isFinished() {
+            return ctrl.isFinished(isTop);
+        }
+
+        @Override
+        public void finish() {
+            ctrl.finish();
+        }
+
+        @Override
+        public boolean draw(Canvas canvas) {
+            // Never paint stock Android glow or RenderNode stretch — child translation RK4 owns visuals
+            return false;
+        }
     }
 
     private static void applyChildTranslationY(ViewGroup rv, float ty) {
@@ -5499,10 +6225,8 @@ public final class CouiBrowserUiEnhancer {
                     View fragContent = activity.findViewById(ID_SETTINGS_CONTENT);
                     if (settleStep == 0) {
                         // Pass 1: Screen swapped -> immediately switch header (large "Settings" vs inline "<- Title")
+                        // Wait for AppBarLayout to finish measuring before styling list paddingTop!
                         syncSettingsHeaderAndSearch(activity, dark);
-                        if (fragContent != null) {
-                            styleSettingsTree(activity, fragContent, dark, canvasColor);
-                        }
                         View blur = rootCoord.findViewWithTag(SETTINGS_TOP_BLUR_TAG);
                         if (blur instanceof CouiTopProgressiveBlurView) {
                             ((CouiTopProgressiveBlurView) blur).syncHeight();
@@ -5524,6 +6248,13 @@ public final class CouiBrowserUiEnhancer {
                         if (fragContent != null && fragContent.isLayoutRequested()) {
                             return false;
                         }
+                    }
+                    // Refresh incoming top progressive blur once before starting hardware-layered slide
+                    View readyBlur = rootCoord.findViewWithTag(SETTINGS_TOP_BLUR_TAG);
+                    if (readyBlur instanceof CouiTopProgressiveBlurView) {
+                        CouiTopProgressiveBlurView bv = (CouiTopProgressiveBlurView) readyBlur;
+                        bv.syncHeight();
+                        bv.recordBackdrop();
                     }
                     // Ready! Incoming screen has final header, final Search pill, and final card insets.
                     waitingForCommit = false;
@@ -5574,6 +6305,7 @@ public final class CouiBrowserUiEnhancer {
             final int topMargin = rootCoord.getTop();
             final float shadowW = dpF(activity, 20f);
 
+            sSettingsSlideAnimating = true;
             origRootLayerType = rootCoord.getLayerType();
             rootCoord.setLayerType(View.LAYER_TYPE_HARDWARE, null);
 
@@ -5675,6 +6407,7 @@ public final class CouiBrowserUiEnhancer {
             removeReadyPreDraw();
             animator = null;
             sSettingsSlideActive = false;
+            sSettingsSlideAnimating = false;
             if (rootCoord != null) {
                 rootCoord.setTranslationX(0f);
                 rootCoord.setLayerType(origRootLayerType, null);
