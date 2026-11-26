@@ -8,6 +8,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
+import android.graphics.Bitmap;
 import android.graphics.BlendMode;
 import android.graphics.BlendModeColorFilter;
 import android.graphics.Canvas;
@@ -22,6 +23,7 @@ import android.graphics.BlurMaskFilter;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.PorterDuff;
+import android.graphics.PorterDuffColorFilter;
 import android.graphics.RadialGradient;
 import android.graphics.Rect;
 import android.graphics.RectF;
@@ -196,13 +198,21 @@ public final class CouiBrowserUiEnhancer {
     private static final ColorStateList CSL_CLOSE_DARK_UNFOCUSED = ColorStateList.valueOf(0xB3FFFFFF);
     private static final ColorStateList CSL_CLOSE_DARK_FOCUSED = ColorStateList.valueOf(0xFF191919);
 
-    // Round 12: New Tab Page (NTP) & Search Engine Settings resource IDs
+    // Round 12 & 16: New Tab Page (NTP) & Search Engine Settings resource IDs
     private static final int ID_NTP_CONTENT = 0x7f0108a6;
     private static final int ID_NTP_SCROLLVIEW = 0x7f0108bb;
     private static final int ID_FEED_STREAM_RV = 0x7f01052c;
+    private static final int ID_NTP_LOGO_CONTAINER = 0x7f010730;
+    private static final int ID_NTP_LOGO_VIEW = 0x7f010b1c;
+    private static final int ID_NTP_LOGO_STUB = 0x7f010732;
     private static final int ID_NTP_SEARCH_BOX_BG = 0x7f010b07;
     private static final int ID_NTP_SEARCH_BOX_CONTAINER = 0x7f010b08;
+    private static final int ID_NTP_SEARCH_ENGINE_ICON = 0x7f010b09;
+    private static final int ID_NTP_SEARCH_PLUS_BTN = 0x7f010b0a;
+    private static final int ID_NTP_SEARCH_AI_CHIP = 0x7f010b06;
+    private static final int ID_NTP_SEARCH_SHADOW = 0x7f010b0b;
     private static final int ID_NTP_SEARCH_BOX_TEXT = 0x7f010b0d;
+    private static final int ID_NTP_VOICE_BTN = 0x7f010e28;
     private static final int ID_NTP_MV_TILES_CONTAINER = 0x7f010845;
     private static final int ID_NTP_MV_TILES_LAYOUT = 0x7f010846;
     private static final int ID_NTP_TILE_ICON_BG = 0x7f010d3b;
@@ -211,7 +221,10 @@ public final class CouiBrowserUiEnhancer {
     private static final int ID_SE_NAME = 0x7f01084a;
     private static final int ID_SE_URL = 0x7f010ddc;
     private static final int ID_SE_CARD_CONTAINER = 0x7f010307;
+    private static final int ID_SEARCH_CLEAR_BTN = 0x7f0102bc;
     private static final String SETTINGS_OBSERVER_TAG = "coui_settings_frag_observer";
+    private static final String SETTINGS_LARGE_TITLE_TAG = "coui_settings_large_title";
+    private static final String NTP_SEARCH_HEADING_TAG = "coui_ntp_search_heading";
     private static final String RADIO_TAG = "coui_radio_styled";
 
     // Chromium native menu item IDs dispatched via ChromeTabbedActivity.R2(int, boolean, Bundle, Lpo9)
@@ -1170,9 +1183,12 @@ public final class CouiBrowserUiEnhancer {
     }
 
     /**
-     * Styles the New Tab Page (NTP) to match Titanium Settings 1:1 ColorOS 17 COUI neutral tokens:
-     * Canvas #F0F1F3 (Light) / #000000 (Dark), Search pill & Shortcuts card #FFFFFF / #1C1C1E,
-     * Tile icon circles #F0F1F3 / #2C2C2E — zero Material You lavender/blue tint.
+     * Round 16: Redesigned ColorOS 17 New Tab Page (NTP):
+     * - Hides Google "G" search engine logo & Doodle container completely.
+     * - Renders a horizontally centered h1-scale "Search" display heading (36sp Bold/SemiBold) above the pill.
+     * - Styles NTP id/search_box to match Address Bar & Settings search capsule 1:1 (44dp height, full capsule
+     *   radius, 16dp side margins, Fluent search-24-regular icon, translucent Liquid Glass surface + specular rim).
+     * - Keeps the 20dp squircle shortcuts card cleanly spaced below with exact 16dp horizontal gutters.
      */
     private static void styleNtpColors(Activity activity, View root, boolean isDark) {
         if (activity == null || root == null) return;
@@ -1184,9 +1200,8 @@ public final class CouiBrowserUiEnhancer {
         int canvasCol = isDark ? 0xFF000000 : 0xFFF0F1F3;
         int cardCol = isDark ? 0xFF1C1C1E : 0xFFFFFFFF;
         int tileCircleCol = isDark ? 0xFF2C2C2E : 0xFFF0F1F3;
-        int titleCol = isDark ? 0xE6FFFFFF : 0xFF191919;
-        int hintCol = isDark ? 0x8AFFFFFF : 0xFF7F7F7F;
-        int strokeCol = isDark ? 0x1AFFFFFF : 0x0D000000;
+        int titleCol = isDark ? 0xF2FFFFFF : 0xFF191919;
+        int hintCol = isDark ? 0x8AFFFFFF : 0xFF8C8C8C;
 
         View[] canvases = {ntpContent, ntpScroll, feedRv};
         for (View v : canvases) {
@@ -1199,7 +1214,6 @@ public final class CouiBrowserUiEnhancer {
                 v.setOverScrollMode(View.OVER_SCROLL_NEVER);
                 if (v instanceof ViewGroup) attachCouiOverscroll((ViewGroup) v);
             }
-            // Also paint immediate parent NativePage container if it holds a Material tonal fill
             ViewParent p = v.getParent();
             if (p instanceof View) {
                 View pv = (View) p;
@@ -1213,49 +1227,252 @@ public final class CouiBrowserUiEnhancer {
             }
         }
 
-        // Clean pure #FFFFFF / #1C1C1E NTP search pill (zero inner Material You lavender/grey box!)
+        // 1. Hide Google "G" Logo / Doodle container so our centered "Search" heading owns the focal space
+        if (ntpContent != null) {
+            View logoCont = ntpContent.findViewById(ID_NTP_LOGO_CONTAINER);
+            if (logoCont != null && logoCont.getVisibility() != View.GONE) logoCont.setVisibility(View.GONE);
+            View logoView = ntpContent.findViewById(ID_NTP_LOGO_VIEW);
+            if (logoView != null && logoView.getVisibility() != View.GONE) logoView.setVisibility(View.GONE);
+            View logoStub = ntpContent.findViewById(ID_NTP_LOGO_STUB);
+            if (logoStub != null && logoStub.getVisibility() != View.GONE) logoStub.setVisibility(View.GONE);
+            if (ntpContent.getPaddingTop() != 0) {
+                ntpContent.setPadding(ntpContent.getPaddingLeft(), 0,
+                        ntpContent.getPaddingRight(), ntpContent.getPaddingBottom());
+            }
+        }
+
+        // 2. Inject / sync horizontally centered h1-scale "Search" display heading directly above NTP search box
         View searchBox = ntpContent != null ? ntpContent.findViewById(ID_SEARCH_BOX) : root.findViewById(ID_SEARCH_BOX);
         View searchBoxBg = ntpContent != null ? ntpContent.findViewById(ID_NTP_SEARCH_BOX_BG) : root.findViewById(ID_NTP_SEARCH_BOX_BG);
         View searchBoxCont = ntpContent != null ? ntpContent.findViewById(ID_NTP_SEARCH_BOX_CONTAINER) : root.findViewById(ID_NTP_SEARCH_BOX_CONTAINER);
-        View searchBoxShadow = ntpContent != null ? ntpContent.findViewById(0x7f010b0b) : root.findViewById(0x7f010b0b);
+        View searchBoxShadow = ntpContent != null ? ntpContent.findViewById(ID_NTP_SEARCH_SHADOW) : root.findViewById(ID_NTP_SEARCH_SHADOW);
+
+        if (ntpContent instanceof LinearLayout) {
+            LinearLayout ntpLinear = (LinearLayout) ntpContent;
+            View existingHeading = ntpLinear.findViewWithTag(NTP_SEARCH_HEADING_TAG);
+            TextView headingTv;
+            int sbH = getStatusBarHeight(activity);
+            int wantTopMargin = sbH + dp(activity, 58);
+            int wantBotMargin = dp(activity, 22);
+            if (existingHeading instanceof TextView) {
+                headingTv = (TextView) existingHeading;
+            } else {
+                headingTv = new TextView(activity);
+                headingTv.setTag(NTP_SEARCH_HEADING_TAG);
+                headingTv.setText("Search");
+                headingTv.setGravity(Gravity.CENTER);
+                headingTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 36f);
+                headingTv.setIncludeFontPadding(false);
+                if (Build.VERSION.SDK_INT >= 28) {
+                    headingTv.setTypeface(Typeface.create(Typeface.SANS_SERIF, 650, false));
+                } else {
+                    headingTv.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+                }
+                // Insert directly before the search box child so it sits right above the search pill
+                int insertIdx = 0;
+                if (searchBox != null) {
+                    View sbBranch = searchBox;
+                    while (sbBranch.getParent() instanceof View && sbBranch.getParent() != ntpLinear) {
+                        sbBranch = (View) sbBranch.getParent();
+                    }
+                    int idx = ntpLinear.indexOfChild(sbBranch);
+                    if (idx >= 0) insertIdx = idx;
+                }
+                LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                hlp.topMargin = wantTopMargin;
+                hlp.bottomMargin = wantBotMargin;
+                hlp.leftMargin = dp(activity, 16);
+                hlp.rightMargin = dp(activity, 16);
+                ntpLinear.addView(headingTv, insertIdx, hlp);
+            }
+            if (headingTv.getCurrentTextColor() != titleCol) {
+                headingTv.setTextColor(titleCol);
+            }
+            if (headingTv.getVisibility() != View.VISIBLE) {
+                headingTv.setVisibility(View.VISIBLE);
+            }
+            ViewGroup.LayoutParams hlp = headingTv.getLayoutParams();
+            if (hlp instanceof ViewGroup.MarginLayoutParams) {
+                ViewGroup.MarginLayoutParams hmlp = (ViewGroup.MarginLayoutParams) hlp;
+                if (hmlp.topMargin != wantTopMargin || hmlp.bottomMargin != wantBotMargin) {
+                    hmlp.topMargin = wantTopMargin;
+                    hmlp.bottomMargin = wantBotMargin;
+                    headingTv.setLayoutParams(hmlp);
+                }
+            }
+        }
+
+        // 3. Restyle NTP search box to unified ColorOS 17 Liquid Glass capsule (44dp, 16dp margins, Fluent search icon)
+        int pillH = dp(activity, 44);
         if (searchBoxCont != null && searchBoxCont.getBackground() != null) {
             searchBoxCont.setBackground(null);
         }
-        if (searchBoxShadow != null && searchBoxShadow.getBackground() != null) {
-            searchBoxShadow.setBackground(null);
+        if (searchBoxShadow != null) {
+            if (searchBoxShadow.getBackground() != null) searchBoxShadow.setBackground(null);
+            if (searchBoxShadow.getMinimumHeight() != 0) searchBoxShadow.setMinimumHeight(0);
+            if (searchBoxShadow instanceof LinearLayout) {
+                ((LinearLayout) searchBoxShadow).setGravity(Gravity.CENTER_VERTICAL);
+            }
+            int innerPadH = dp(activity, 14);
+            if (searchBoxShadow.getPaddingLeft() != innerPadH || searchBoxShadow.getPaddingRight() != innerPadH
+                    || searchBoxShadow.getPaddingTop() != 0 || searchBoxShadow.getPaddingBottom() != 0) {
+                searchBoxShadow.setPadding(innerPadH, 0, innerPadH, 0);
+            }
+            ViewGroup.LayoutParams shLp = searchBoxShadow.getLayoutParams();
+            if (shLp != null) {
+                boolean shDirty = (shLp.height != pillH);
+                shLp.height = pillH;
+                if (shLp instanceof ViewGroup.MarginLayoutParams) {
+                    ViewGroup.MarginLayoutParams shMlp = (ViewGroup.MarginLayoutParams) shLp;
+                    if (shMlp.topMargin != 0 || shMlp.bottomMargin != 0) {
+                        shMlp.topMargin = 0;
+                        shMlp.bottomMargin = 0;
+                        shDirty = true;
+                    }
+                }
+                if (shDirty) searchBoxShadow.setLayoutParams(shLp);
+            }
         }
         if (searchBoxBg != null && searchBoxBg != searchBox && searchBoxBg.getBackground() != null) {
             searchBoxBg.setBackground(null);
         }
-        String pillTag = "coui_ntp_pill2_" + (isDark ? "d" : "l");
+
         View pillTarget = (searchBox != null) ? searchBox : searchBoxBg;
         if (pillTarget != null) {
             if (pillTarget instanceof ViewGroup) {
                 stripNtpSearchBoxChildrenBg((ViewGroup) pillTarget);
             }
+            int marginH = dp(activity, 16);
+            if (pillTarget.getPaddingLeft() != 0 || pillTarget.getPaddingRight() != 0
+                    || pillTarget.getPaddingTop() != 0 || pillTarget.getPaddingBottom() != 0) {
+                pillTarget.setPadding(0, 0, 0, 0);
+            }
+            if (pillTarget.getMinimumHeight() != pillH) {
+                pillTarget.setMinimumHeight(pillH);
+            }
+            pillTarget.setElevation(0f);
+            ViewGroup.LayoutParams slp = pillTarget.getLayoutParams();
+            if (slp instanceof ViewGroup.MarginLayoutParams) {
+                ViewGroup.MarginLayoutParams smlp = (ViewGroup.MarginLayoutParams) slp;
+                if (smlp.height != pillH || smlp.leftMargin != marginH || smlp.rightMargin != marginH
+                        || smlp.topMargin != 0) {
+                    smlp.height = pillH;
+                    smlp.leftMargin = marginH;
+                    smlp.rightMargin = marginH;
+                    smlp.topMargin = 0;
+                    pillTarget.setLayoutParams(smlp);
+                }
+            }
+            // Clear any horizontal padding on intermediate wrappers between pillTarget and ntpContent
+            ViewParent wp = pillTarget.getParent();
+            while (wp instanceof View && wp != ntpContent && wp != root) {
+                View wv = (View) wp;
+                if (wv.getPaddingLeft() != 0 || wv.getPaddingRight() != 0) {
+                    wv.setPadding(0, wv.getPaddingTop(), 0, wv.getPaddingBottom());
+                }
+                wp = wv.getParent();
+            }
+            String pillTag = "coui_ntp_glass_r16_" + (isDark ? "d" : "l");
             if (!pillTag.equals(pillTarget.getTag())) {
-                GradientDrawable pill = new GradientDrawable();
-                pill.setShape(GradientDrawable.RECTANGLE);
-                pill.setCornerRadius(dpF(activity, 28f));
-                pill.setColor(cardCol);
-                pill.setStroke(Math.max(1, dp(activity, 0.75f)), strokeCol);
-                pillTarget.setBackground(pill);
+                pillTarget.setBackground(new CouiNtpGlassPillDrawable(activity, isDark));
                 pillTarget.setTag(pillTag);
             }
         }
+
+        // Replace Google "G" search engine icon with Microsoft Fluent search-24-regular & hide mic/lens/plus clutter
+        if (searchBox != null) {
+            View engineIcon = searchBox.findViewById(ID_NTP_SEARCH_ENGINE_ICON);
+            if (engineIcon instanceof ImageView) {
+                ImageView iv = (ImageView) engineIcon;
+                String icTag = "coui_ntp_fluent_search_" + (isDark ? "d" : "l");
+                if (!icTag.equals(iv.getTag())) {
+                    iv.clearColorFilter();
+                    iv.setImageTintList(null);
+                    iv.setScaleType(ImageView.ScaleType.CENTER);
+                    iv.setImageDrawable(new CouiSearchGlassIconDrawable(activity, isDark));
+                    iv.setTag(icTag);
+                }
+                int icSize = dp(activity, 20);
+                ViewGroup.LayoutParams ilp = iv.getLayoutParams();
+                if (ilp instanceof ViewGroup.MarginLayoutParams) {
+                    ViewGroup.MarginLayoutParams imlp = (ViewGroup.MarginLayoutParams) ilp;
+                    boolean dirty = (imlp.width != icSize || imlp.height != icSize || imlp.getMarginEnd() != dp(activity, 10));
+                    if (imlp instanceof LinearLayout.LayoutParams) {
+                        LinearLayout.LayoutParams lllp = (LinearLayout.LayoutParams) imlp;
+                        if (lllp.gravity != Gravity.CENTER_VERTICAL) {
+                            lllp.gravity = Gravity.CENTER_VERTICAL;
+                            dirty = true;
+                        }
+                    }
+                    if (dirty) {
+                        imlp.width = icSize;
+                        imlp.height = icSize;
+                        imlp.setMarginStart(0);
+                        imlp.setMarginEnd(dp(activity, 10));
+                        iv.setLayoutParams(imlp);
+                    }
+                }
+                if (iv.getVisibility() != View.VISIBLE) iv.setVisibility(View.VISIBLE);
+            }
+            int[] hideNtpIds = {ID_NTP_SEARCH_PLUS_BTN, ID_NTP_SEARCH_AI_CHIP, ID_NTP_VOICE_BTN, ID_LENS_BUTTON};
+            for (int hid : hideNtpIds) {
+                View hv = searchBox.findViewById(hid);
+                if (hv != null && hv.getVisibility() != View.GONE) {
+                    hv.setVisibility(View.GONE);
+                }
+            }
+        }
+
         View searchText = ntpContent != null ? ntpContent.findViewById(ID_NTP_SEARCH_BOX_TEXT) : root.findViewById(ID_NTP_SEARCH_BOX_TEXT);
         if (searchText instanceof TextView) {
             TextView tv = (TextView) searchText;
             if (tv.getCurrentHintTextColor() != hintCol) tv.setHintTextColor(hintCol);
             if (tv.getCurrentTextColor() != titleCol) tv.setTextColor(titleCol);
-        }
-        if (searchBox instanceof ViewGroup) {
-            tintNtpSearchIcons((ViewGroup) searchBox, isDark ? 0xB3FFFFFF : 0xFF686D74);
+            tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15.5f);
+            tv.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+            tv.setIncludeFontPadding(false);
+            tv.setMinimumHeight(0);
+            tv.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+            if (tv.getPaddingTop() != 0 || tv.getPaddingBottom() != 0
+                    || tv.getPaddingLeft() != 0 || tv.getPaddingRight() != 0) {
+                tv.setPadding(0, 0, 0, 0);
+            }
+            ViewGroup.LayoutParams tlp = tv.getLayoutParams();
+            if (tlp != null && tlp.height != pillH) {
+                tlp.height = pillH;
+                tv.setLayoutParams(tlp);
+            }
+            ViewParent tp = tv.getParent();
+            if (tp instanceof View) {
+                View pv = (View) tp;
+                if (pv.getMinimumHeight() != 0) pv.setMinimumHeight(0);
+                if (pv.getPaddingTop() != 0 || pv.getPaddingBottom() != 0) {
+                    pv.setPadding(pv.getPaddingLeft(), 0, pv.getPaddingRight(), 0);
+                }
+                ViewGroup.LayoutParams plp = pv.getLayoutParams();
+                if (plp != null && plp.height != pillH) {
+                    plp.height = pillH;
+                    pv.setLayoutParams(plp);
+                }
+            }
         }
 
-        // Most Visited shortcuts card: 20dp squircle #FFFFFF / #1C1C1E with neutral #F0F1F3 / #2C2C2E icon circles
+        // 4. Most Visited shortcuts card: 20dp squircle #FFFFFF / #1C1C1E with exact 16dp horizontal margins
         View mvCont = ntpContent != null ? ntpContent.findViewById(ID_NTP_MV_TILES_CONTAINER) : root.findViewById(ID_NTP_MV_TILES_CONTAINER);
         if (mvCont != null) {
+            int marginH = dp(activity, 16);
+            int mvTop = dp(activity, 20);
+            ViewGroup.LayoutParams mlp = mvCont.getLayoutParams();
+            if (mlp instanceof ViewGroup.MarginLayoutParams) {
+                ViewGroup.MarginLayoutParams mmlp = (ViewGroup.MarginLayoutParams) mlp;
+                if (mmlp.leftMargin != marginH || mmlp.rightMargin != marginH || mmlp.topMargin != mvTop) {
+                    mmlp.leftMargin = marginH;
+                    mmlp.rightMargin = marginH;
+                    mmlp.topMargin = mvTop;
+                    mvCont.setLayoutParams(mmlp);
+                }
+            }
             String mvTag = "coui_ntp_mv_" + (isDark ? "d" : "l");
             if (!mvTag.equals(mvCont.getTag())) {
                 GradientDrawable card = new GradientDrawable();
@@ -1269,6 +1486,76 @@ public final class CouiBrowserUiEnhancer {
                 styleNtpTilesRecursive((ViewGroup) mvCont, activity, isDark, tileCircleCol, titleCol);
             }
         }
+    }
+
+    /**
+     * ColorOS 17 Liquid Glass capsule drawable for the NTP Search Pill:
+     * Translucent luminous frosted fill + top-to-bottom glass sheen + dual-edge specular rim + hairline contour.
+     * Uses zero HWUI elevation so no opaque-occluder shadow box can bleed through.
+     */
+    private static final class CouiNtpGlassPillDrawable extends Drawable {
+        private final Context ctx;
+        private final boolean isDark;
+        private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint sheenPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint borderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF rf = new RectF();
+        private int lastW = -1, lastH = -1;
+
+        CouiNtpGlassPillDrawable(Context ctx, boolean isDark) {
+            this.ctx = ctx;
+            this.isDark = isDark;
+            fillPaint.setStyle(Paint.Style.FILL);
+            sheenPaint.setStyle(Paint.Style.FILL);
+            rimPaint.setStyle(Paint.Style.STROKE);
+            rimPaint.setStrokeWidth(dpF(ctx, 0.9f));
+            borderPaint.setStyle(Paint.Style.STROKE);
+            borderPaint.setStrokeWidth(Math.max(1f, dpF(ctx, 0.6f)));
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            Rect b = getBounds();
+            int w = b.width();
+            int h = b.height();
+            if (w <= 0 || h <= 0) return;
+            float r = h * 0.5f;
+            rf.set(b.left + 0.5f, b.top + 0.5f, b.right - 0.5f, b.bottom - 0.5f);
+
+            if (w != lastW || h != lastH) {
+                lastW = w;
+                lastH = h;
+                sheenPaint.setShader(new LinearGradient(
+                        0f, b.top, 0f, b.bottom,
+                        isDark
+                                ? new int[]{0x26FFFFFF, 0x06FFFFFF, 0x10000000}
+                                : new int[]{0x70FFFFFF, 0x18FFFFFF, 0x12DCE4F0},
+                        new float[]{0f, 0.48f, 1f},
+                        Shader.TileMode.CLAMP));
+                rimPaint.setShader(new LinearGradient(
+                        0f, b.top, 0f, b.bottom,
+                        isDark
+                                ? new int[]{0x66FFFFFF, 0x1EFFFFFF, 0x48FFFFFF}
+                                : new int[]{0xFFFFFFFF, 0x58FFFFFF, 0xF0FFFFFF},
+                        new float[]{0f, 0.5f, 1f},
+                        Shader.TileMode.CLAMP));
+            }
+
+            fillPaint.setColor(isDark ? 0xD81E1E22 : 0xF2FFFFFF);
+            canvas.drawRoundRect(rf, r, r, fillPaint);
+            canvas.drawRoundRect(rf, r, r, sheenPaint);
+
+            borderPaint.setColor(isDark ? 0x22FFFFFF : 0x10000000);
+            canvas.drawRoundRect(rf, r, r, borderPaint);
+
+            rf.inset(dpF(ctx, 0.65f), dpF(ctx, 0.65f));
+            canvas.drawRoundRect(rf, Math.max(0f, r - dpF(ctx, 0.65f)), Math.max(0f, r - dpF(ctx, 0.65f)), rimPaint);
+        }
+
+        @Override public void setAlpha(int alpha) {}
+        @Override public void setColorFilter(ColorFilter cf) {}
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
     }
 
     private static void stripNtpSearchBoxChildrenBg(ViewGroup vg) {
@@ -2460,29 +2747,13 @@ public final class CouiBrowserUiEnhancer {
                 try {
                     boolean dark = isDarkMode(activity);
                     int canvasColor = dark ? 0xFF000000 : 0xFFF0F1F3;
+                    syncSettingsHeaderAndSearch(activity, dark);
                     styleSettingsTree(activity, fragContent, dark, canvasColor);
                     View root = activity.findViewById(ID_SETTINGS_ACTIVITY);
                     if (root != null) {
                         View blur = root.findViewWithTag(SETTINGS_TOP_BLUR_TAG);
                         if (blur instanceof CouiTopProgressiveBlurView) {
                             ((CouiTopProgressiveBlurView) blur).syncHeight();
-                        }
-                    }
-                    // Keep Settings toolbar back button & title styling synced across fragment transitions
-                    View tb = activity.findViewById(ID_SETTINGS_TOOLBAR);
-                    if (tb instanceof ViewGroup) {
-                        ViewGroup tbg = (ViewGroup) tb;
-                        for (int i = 0; i < tbg.getChildCount(); i++) {
-                            View c = tbg.getChildAt(i);
-                            if (c instanceof ImageButton && c.getVisibility() != View.INVISIBLE) {
-                                c.setVisibility(View.INVISIBLE);
-                                c.setAlpha(0f);
-                                c.setClickable(false);
-                            } else if (c instanceof TextView && !(c instanceof EditText)) {
-                                ((TextView) c).setTextColor(dark ? 0xE6FFFFFF : 0xFF191919);
-                            } else if (c.getClass().getName().contains("ActionMenuView") && c.getVisibility() != View.GONE) {
-                                c.setVisibility(View.GONE);
-                            }
                         }
                     }
                 } catch (Throwable ignored) {}
@@ -2610,14 +2881,226 @@ public final class CouiBrowserUiEnhancer {
         }
     }
 
+    /**
+     * Detects whether SettingsActivity is currently displaying the root MainSettings screen
+     * (and NOT a sub-settings fragment or active search query).
+     * Checks FragmentManager back-stack count + active fragment class (locale-independent),
+     * with a clean toolbar title fallback.
+     */
+    private static boolean isRootSettingsScreen(Activity activity) {
+        if (activity == null) return false;
+        View searchQuery = activity.findViewById(ID_SEARCH_QUERY_CONTAINER);
+        if (searchQuery != null && searchQuery.getVisibility() == View.VISIBLE) {
+            return false;
+        }
+        try {
+            Method getFm = activity.getClass().getMethod("J0");
+            Object fm = getFm.invoke(activity);
+            if (fm != null) {
+                Method getBackStack = fm.getClass().getMethod("L");
+                int bsCount = (Integer) getBackStack.invoke(fm);
+                if (bsCount > 0) return false;
+                Field fStore = fm.getClass().getDeclaredField("c");
+                fStore.setAccessible(true);
+                Object store = fStore.get(fm);
+                if (store != null) {
+                    Method getFrags = store.getClass().getMethod("f");
+                    Object listObj = getFrags.invoke(store);
+                    if (listObj instanceof List<?>) {
+                        List<?> frags = (List<?>) listObj;
+                        boolean sawMain = false;
+                        boolean sawSub = false;
+                        for (Object fr : frags) {
+                            if (fr == null) continue;
+                            String fn = fr.getClass().getName();
+                            if (fn.endsWith(".MainSettings")) {
+                                sawMain = true;
+                            } else if (!fn.contains("MultiColumnSettings")
+                                    && !fn.contains("EmptyFragment")
+                                    && !fn.contains("RecentSearches")) {
+                                // Check if this fragment's view is actually shown
+                                try {
+                                    Field fView = fr.getClass().getSuperclass() != null ? findFieldUp(fr.getClass(), "Y") : null;
+                                    Object fv = fView != null ? fView.get(fr) : null;
+                                    if (fv instanceof View && ((View) fv).isShown()) {
+                                        sawSub = true;
+                                    }
+                                } catch (Throwable ignored) {
+                                    sawSub = true;
+                                }
+                            }
+                        }
+                        if (sawSub) return false;
+                        if (sawMain) return true;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+
+        // Fallback: inspect Toolbar title text
+        View tb = activity.findViewById(ID_SETTINGS_TOOLBAR);
+        if (tb instanceof ViewGroup) {
+            ViewGroup tbg = (ViewGroup) tb;
+            for (int i = 0; i < tbg.getChildCount(); i++) {
+                View c = tbg.getChildAt(i);
+                if (c instanceof TextView && !(c instanceof EditText)) {
+                    CharSequence t = ((TextView) c).getText();
+                    if (t != null && t.length() > 0) {
+                        return "Settings".contentEquals(t);
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private static Field findFieldUp(Class<?> cls, String name) {
+        Class<?> c = cls;
+        while (c != null && c != Object.class) {
+            try {
+                Field f = c.getDeclaredField(name);
+                f.setAccessible(true);
+                return f;
+            } catch (NoSuchFieldException e) {
+                c = c.getSuperclass();
+            }
+        }
+        return null;
+    }
+
     private static int getSettingsAppBarBottom(Activity activity) {
         if (activity == null) return 0;
+        View rootCoord = activity.findViewById(ID_SETTINGS_ACTIVITY);
         View appBar = activity.findViewById(ID_SETTINGS_APP_BAR);
+        View searchBox = activity.findViewById(ID_SEARCH_BOX);
+        int bestBottom = 0;
         if (appBar != null && appBar.getBottom() > 0) {
-            return appBar.getBottom();
+            bestBottom = appBar.getBottom();
         }
-        // AppBarLayout sits inside CoordinatorLayout (below status bar) and contains Toolbar (56dp) + SearchBox (~68dp)
-        return dp(activity, 128);
+        if (searchBox != null && searchBox.isShown() && searchBox.getHeight() > 0 && rootCoord != null) {
+            int[] sbLoc = new int[2];
+            int[] crLoc = new int[2];
+            searchBox.getLocationInWindow(sbLoc);
+            rootCoord.getLocationInWindow(crLoc);
+            int sbBottom = (sbLoc[1] + searchBox.getHeight()) - crLoc[1];
+            if (sbBottom > bestBottom) {
+                bestBottom = sbBottom;
+            }
+        }
+        if (bestBottom > 0) return bestBottom;
+        return dp(activity, isRootSettingsScreen(activity) ? 186 : 132);
+    }
+
+    /**
+     * Synchronizes Root Settings large display title ("Settings") vs Sub-Settings inline title,
+     * circular 40dp Liquid Glass back button, and persistent 1:1 COUI Search capsule.
+     * Safe to invoke from attachToSettings(), OnPreDrawListener, and onSettingsDrawOver().
+     */
+    private static void syncSettingsHeaderAndSearch(final Activity activity, final boolean dark) {
+        if (activity == null) return;
+        View searchQuery = activity.findViewById(ID_SEARCH_QUERY_CONTAINER);
+        boolean inSearch = (searchQuery != null && searchQuery.getVisibility() == View.VISIBLE);
+        boolean isRoot = !inSearch && isRootSettingsScreen(activity);
+
+        CharSequence currentTitle = "Settings";
+        View toolbarView = activity.findViewById(ID_SETTINGS_TOOLBAR);
+        if (toolbarView instanceof ViewGroup) {
+            ViewGroup toolbar = (ViewGroup) toolbarView;
+            View stockNavBtn = null;
+            for (int i = 0; i < toolbar.getChildCount(); i++) {
+                View child = toolbar.getChildAt(i);
+                String cName = child.getClass().getName();
+                if (child instanceof TextView && !(child instanceof EditText)) {
+                    TextView tv = (TextView) child;
+                    if (tv.getText() != null && tv.getText().length() > 0) {
+                        currentTitle = tv.getText();
+                    }
+                    tv.setTextColor(dark ? 0xE6FFFFFF : 0xFF191919);
+                    tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f);
+                    tv.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+                    if (isRoot || inSearch) {
+                        if (tv.getVisibility() != View.INVISIBLE) tv.setVisibility(View.INVISIBLE);
+                        if (tv.getAlpha() != 0f) tv.setAlpha(0f);
+                    } else {
+                        if (tv.getVisibility() != View.VISIBLE) tv.setVisibility(View.VISIBLE);
+                        if (tv.getAlpha() != 1f) tv.setAlpha(1f);
+                    }
+                } else if (cName.contains("ActionMenuView")) {
+                    if (child.getVisibility() != View.GONE) child.setVisibility(View.GONE);
+                } else if (child instanceof ImageButton) {
+                    stockNavBtn = child;
+                    if (child.getVisibility() != View.INVISIBLE) child.setVisibility(View.INVISIBLE);
+                    if (child.getAlpha() != 0f) child.setAlpha(0f);
+                    child.setClickable(false);
+                }
+            }
+
+            ViewParent tp = toolbar.getParent();
+            if (tp instanceof FrameLayout) {
+                FrameLayout holder = (FrameLayout) tp;
+                View existingBtn = holder.findViewWithTag(SETTINGS_BACK_TAG);
+                if (existingBtn instanceof CouiSettingsBackButtonView) {
+                    CouiSettingsBackButtonView backBtn = (CouiSettingsBackButtonView) existingBtn;
+                    backBtn.setDarkMode(dark);
+                    if (stockNavBtn != null) backBtn.setStockNavButton(stockNavBtn);
+                    int wantVis = inSearch ? View.GONE : View.VISIBLE;
+                    if (backBtn.getVisibility() != wantVis) backBtn.setVisibility(wantVis);
+                }
+            }
+        }
+
+        // Large "Settings" ColorOS 17 display heading EXCLUSIVELY on root MainSettings (below back button row)
+        View appBarView = activity.findViewById(ID_SETTINGS_APP_BAR);
+        if (appBarView instanceof ViewGroup) {
+            ViewGroup appBar = (ViewGroup) appBarView;
+            View existingLarge = appBar.findViewWithTag(SETTINGS_LARGE_TITLE_TAG);
+            TextView largeTv;
+            if (existingLarge instanceof TextView) {
+                largeTv = (TextView) existingLarge;
+            } else {
+                largeTv = new TextView(activity);
+                largeTv.setTag(SETTINGS_LARGE_TITLE_TAG);
+                largeTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 33f);
+                largeTv.setIncludeFontPadding(false);
+                if (Build.VERSION.SDK_INT >= 28) {
+                    largeTv.setTypeface(Typeface.create(Typeface.SANS_SERIF, 650, false));
+                } else {
+                    largeTv.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+                }
+                largeTv.setPadding(dp(activity, 18), dp(activity, 6), dp(activity, 18), dp(activity, 14));
+                LinearLayout.LayoutParams ltp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                int insertAt = Math.min(1, appBar.getChildCount());
+                appBar.addView(largeTv, insertAt, ltp);
+            }
+            CharSequence wantLabel = (currentTitle != null && currentTitle.length() > 0) ? currentTitle : "Settings";
+            if (!wantLabel.equals(largeTv.getText())) {
+                largeTv.setText(wantLabel);
+            }
+            int largeCol = dark ? 0xF2FFFFFF : 0xFF191919;
+            if (largeTv.getCurrentTextColor() != largeCol) {
+                largeTv.setTextColor(largeCol);
+            }
+            int wantLargeVis = isRoot ? View.VISIBLE : View.GONE;
+            if (largeTv.getVisibility() != wantLargeVis) {
+                largeTv.setVisibility(wantLargeVis);
+            }
+        }
+
+        // Keep Settings search pill ALWAYS visible & styled 1:1 with settings-coloros.jpg across all sub-settings!
+        View searchBox = activity.findViewById(ID_SEARCH_BOX);
+        if (searchBox != null) {
+            if (!inSearch && searchBox.getVisibility() != View.VISIBLE) {
+                searchBox.setVisibility(View.VISIBLE);
+            }
+            if (searchBox.getAlpha() < 0.99f && !inSearch) {
+                searchBox.setAlpha(1f);
+            }
+            styleCouiSearchBox(searchBox, dark, isRoot, false);
+        }
+        if (searchQuery != null) {
+            styleCouiSearchBox(searchQuery, dark, false, true);
+        }
     }
 
     private static void styleSettingsActivityChrome(final Activity activity, final boolean dark, final int canvasColor) {
@@ -2801,31 +3284,38 @@ public final class CouiBrowserUiEnhancer {
             }
         }
 
-        // Style "Search settings" pill box (ID_SEARCH_BOX & ID_SEARCH_QUERY_CONTAINER)
-        styleCouiSearchBox(activity.findViewById(ID_SEARCH_BOX), dark);
-        styleCouiSearchBox(activity.findViewById(ID_SEARCH_QUERY_CONTAINER), dark);
+        // Style root large title, back button, and 1:1 COUI search capsule ("Search", 42dp, #FFFFFF/#1C1C1E)
+        syncSettingsHeaderAndSearch(activity, dark);
     }
 
+    /** Helper returning the system status bar height in pixels (used by NTP heading & header layouts). */
+    private static int getStatusBarHeight(Context ctx) {
+        if (ctx == null) return 0;
+        int resId = ctx.getResources().getIdentifier("status_bar_height", "dimen", "android");
+        return resId > 0 ? ctx.getResources().getDimensionPixelSize(resId) : dp(ctx, 36);
+    }
+
+    /** 2-arg overload used by Hub / Tab Switcher ("Search your tabs") without overriding its label text. */
     private static void styleCouiSearchBox(View box, boolean dark) {
         if (box == null) return;
         Context ctx = box.getContext();
         GradientDrawable pill = new GradientDrawable();
         pill.setShape(GradientDrawable.RECTANGLE);
-        pill.setCornerRadius(dpF(ctx, 24f));
-        pill.setColor(dark ? 0xFF1C1C1E : 0xFFE3E4E7);
+        pill.setCornerRadius(dpF(ctx, 22f));
+        pill.setColor(dark ? 0xFF1C1C1E : 0xFFFFFFFF);
+        pill.setStroke(Math.max(1, dp(ctx, 0.5f)), dark ? 0x1EFFFFFF : 0x12000000);
         box.setBackground(pill);
-        box.setMinimumHeight(dp(ctx, 44));
-
+        box.setMinimumHeight(dp(ctx, 42));
         if (box instanceof ViewGroup) {
             ViewGroup vg = (ViewGroup) box;
             for (int i = 0; i < vg.getChildCount(); i++) {
                 View c = vg.getChildAt(i);
                 if (c instanceof ImageView) {
-                    ((ImageView) c).setColorFilter(dark ? 0x8AFFFFFF : 0xFF7F7F7F, PorterDuff.Mode.SRC_IN);
+                    ((ImageView) c).setColorFilter(dark ? 0x8AFFFFFF : 0xFF8C8C8C, PorterDuff.Mode.SRC_IN);
                 } else if (c instanceof TextView) {
                     TextView tv = (TextView) c;
-                    tv.setTextColor(dark ? 0x8AFFFFFF : 0xFF7F7F7F);
-                    tv.setHintTextColor(dark ? 0x8AFFFFFF : 0xFF7F7F7F);
+                    tv.setTextColor(dark ? 0x8AFFFFFF : 0xFF8C8C8C);
+                    tv.setHintTextColor(dark ? 0x8AFFFFFF : 0xFF8C8C8C);
                     tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
                     tv.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
                 }
@@ -2833,19 +3323,230 @@ public final class CouiBrowserUiEnhancer {
         }
     }
 
+    /**
+     * Styles Titanium Settings search capsule (ID_SEARCH_BOX & ID_SEARCH_QUERY_CONTAINER)
+     * 1:1 with ColorOS 17 Settings (settings-coloros.jpg):
+     * - 42dp height, full capsule radius (21dp), 16dp horizontal margins.
+     * - Pure #FFFFFF (Light) / #1C1C1E (Dark) fill with subtle 0.5dp hairline contour.
+     * - Microsoft Fluent UI search-24-regular icon (19dp, #8C8C8C) + "Search" placeholder (15sp, #8C8C8C).
+     * - Zero microphone icon clutter.
+     */
+    private static void styleCouiSearchBox(View box, boolean dark, boolean isRoot, boolean isQueryContainer) {
+        if (box == null) return;
+        Context ctx = box.getContext();
+        int pillH = dp(ctx, 42);
+        int marginH = dp(ctx, 16);
+        int topM = isQueryContainer ? dp(ctx, 4) : (isRoot ? dp(ctx, 2) : dp(ctx, 6));
+        int botM = isQueryContainer ? dp(ctx, 4) : dp(ctx, 10);
+
+        String bgTag = "coui_set_sb_r16_" + (dark ? "d" : "l") + "_" + (isQueryContainer ? "q" : "b");
+        if (!bgTag.equals(box.getTag())) {
+            GradientDrawable pill = new GradientDrawable();
+            pill.setShape(GradientDrawable.RECTANGLE);
+            pill.setCornerRadius(dpF(ctx, 21f));
+            pill.setColor(dark ? 0xFF1C1C1E : 0xFFFFFFFF);
+            pill.setStroke(Math.max(1, dp(ctx, 0.5f)), dark ? 0x1EFFFFFF : 0x12000000);
+            box.setBackground(pill);
+            box.setTag(bgTag);
+        }
+        if (box.getMinimumHeight() != pillH) {
+            box.setMinimumHeight(pillH);
+        }
+        box.setElevation(0f);
+
+        ViewGroup.LayoutParams lp = box.getLayoutParams();
+        if (lp instanceof ViewGroup.MarginLayoutParams) {
+            ViewGroup.MarginLayoutParams mlp = (ViewGroup.MarginLayoutParams) lp;
+            boolean dirty = false;
+            if (mlp.height != pillH) { mlp.height = pillH; dirty = true; }
+            if (!isQueryContainer) {
+                if (mlp.width != ViewGroup.LayoutParams.MATCH_PARENT) { mlp.width = ViewGroup.LayoutParams.MATCH_PARENT; dirty = true; }
+                if (mlp.leftMargin != marginH || mlp.rightMargin != marginH) {
+                    mlp.leftMargin = marginH;
+                    mlp.rightMargin = marginH;
+                    mlp.setMarginStart(marginH);
+                    mlp.setMarginEnd(marginH);
+                    dirty = true;
+                }
+                if (mlp.topMargin != topM || mlp.bottomMargin != botM) {
+                    mlp.topMargin = topM;
+                    mlp.bottomMargin = botM;
+                    dirty = true;
+                }
+            } else {
+                if (mlp.leftMargin != marginH || mlp.rightMargin != marginH) {
+                    mlp.leftMargin = marginH;
+                    mlp.rightMargin = marginH;
+                    mlp.setMarginStart(marginH);
+                    mlp.setMarginEnd(marginH);
+                    dirty = true;
+                }
+            }
+            if (dirty) {
+                box.setLayoutParams(mlp);
+            }
+        }
+
+        if (box instanceof ViewGroup) {
+            ViewGroup vg = (ViewGroup) box;
+            int iconColor = dark ? 0x8AFFFFFF : 0xFF8C8C8C;
+            int activeIconColor = dark ? 0xE6FFFFFF : 0xFF191919;
+            for (int i = 0; i < vg.getChildCount(); i++) {
+                View c = vg.getChildAt(i);
+                int cid = c.getId();
+                if (c instanceof ImageView) {
+                    ImageView iv = (ImageView) c;
+                    if (!isQueryContainer) {
+                        if (cid == ID_SEARCH_BOX_ICON || i == 0) {
+                            String icTag = "coui_set_fluent_search_" + (dark ? "d" : "l");
+                            if (!icTag.equals(iv.getTag())) {
+                                iv.clearColorFilter();
+                                iv.setImageTintList(null);
+                                iv.setBackground(null);
+                                iv.setPadding(0, 0, 0, 0);
+                                iv.setScaleType(ImageView.ScaleType.CENTER);
+                                iv.setImageDrawable(new CouiSettingsFluentIconDrawable(ctx, FluentIcons.SEARCH_REGULAR, 19f, iconColor));
+                                iv.setTag(icTag);
+                            }
+                            ViewGroup.LayoutParams ilp = iv.getLayoutParams();
+                            if (ilp instanceof ViewGroup.MarginLayoutParams) {
+                                ViewGroup.MarginLayoutParams imlp = (ViewGroup.MarginLayoutParams) ilp;
+                                int sz = dp(ctx, 20);
+                                if (imlp.width != sz || imlp.height != sz
+                                        || imlp.getMarginStart() != dp(ctx, 14) || imlp.getMarginEnd() != dp(ctx, 10)) {
+                                    imlp.width = sz;
+                                    imlp.height = sz;
+                                    imlp.setMarginStart(dp(ctx, 14));
+                                    imlp.setMarginEnd(dp(ctx, 10));
+                                    iv.setLayoutParams(imlp);
+                                }
+                            }
+                        } else {
+                            // Suppress any trailing mic or auxiliary icon inside the search capsule
+                            if (iv.getVisibility() != View.GONE) iv.setVisibility(View.GONE);
+                        }
+                    } else {
+                        // Active search query container: Fluent back arrow (start) + Fluent dismiss (end)
+                        if (cid == ID_SEARCH_BACK_ICON) {
+                            String bt = "coui_sq_back_" + (dark ? "d" : "l");
+                            if (!bt.equals(iv.getTag())) {
+                                iv.clearColorFilter();
+                                iv.setImageTintList(null);
+                                iv.setImageDrawable(new CouiSettingsFluentIconDrawable(ctx, FluentIcons.BACK, 20f, activeIconColor));
+                                iv.setTag(bt);
+                            }
+                        } else if (cid == ID_SEARCH_CLEAR_BTN) {
+                            String ct = "coui_sq_clr_" + (dark ? "d" : "l");
+                            if (!ct.equals(iv.getTag())) {
+                                iv.clearColorFilter();
+                                iv.setImageTintList(null);
+                                iv.setImageDrawable(new CouiSettingsFluentIconDrawable(ctx, FluentIcons.DISMISS, 18f, iconColor));
+                                iv.setTag(ct);
+                            }
+                        } else {
+                            iv.setColorFilter(iconColor, PorterDuff.Mode.SRC_IN);
+                        }
+                    }
+                } else if (c instanceof EditText) {
+                    EditText et = (EditText) c;
+                    et.setTextColor(dark ? 0xE6FFFFFF : 0xFF191919);
+                    et.setHintTextColor(iconColor);
+                    et.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
+                    et.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+                    if (!"Search".contentEquals(et.getHint())) {
+                        et.setHint("Search");
+                    }
+                } else if (c instanceof TextView) {
+                    TextView tv = (TextView) c;
+                    tv.setTextColor(iconColor);
+                    tv.setHintTextColor(iconColor);
+                    tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
+                    tv.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+                    tv.setGravity(Gravity.CENTER_VERTICAL);
+                    if (!isQueryContainer && !"Search".contentEquals(tv.getText())) {
+                        tv.setText("Search");
+                    }
+                }
+            }
+        }
+    }
+
+    /** Crisp Fluent UI vector icon drawable for Settings search capsule & active query bar. */
+    private static final class CouiSettingsFluentIconDrawable extends Drawable {
+        private final int iconId;
+        private final int sizePx;
+        private final float glyphPx;
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        CouiSettingsFluentIconDrawable(Context ctx, int iconId, float glyphDp, int color) {
+            this.iconId = iconId;
+            this.sizePx = dp(ctx, Math.max(20f, glyphDp + 2f));
+            this.glyphPx = dpF(ctx, glyphDp);
+            this.paint.setStyle(Paint.Style.FILL);
+            this.paint.setColor(color);
+        }
+
+        @Override public int getIntrinsicWidth() { return sizePx; }
+        @Override public int getIntrinsicHeight() { return sizePx; }
+
+        @Override
+        public void draw(Canvas canvas) {
+            Rect b = getBounds();
+            FluentIcons.drawCentered(canvas, iconId, b.exactCenterX(), b.exactCenterY(), glyphPx, paint);
+        }
+
+        @Override public void setAlpha(int alpha) { paint.setAlpha(alpha); }
+        @Override public void setColorFilter(ColorFilter cf) { paint.setColorFilter(cf); }
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+    }
+
+    /**
+     * Round 16: Universal sub-settings horizontal gutter normalization.
+     * Walks upward from any Settings RecyclerView, ListView, or ScrollView through all wrapper
+     * containers up to FragmentContainerView (ID_SETTINGS_CONTENT) and strips redundant left/right
+     * padding & margins so EVERY card across EVERY sub-settings screen resolves to exact 16dp gutters.
+     */
+    private static void normalizeSettingsHorizontalGutter(View scrollOrList) {
+        if (scrollOrList == null) return;
+        View cur = scrollOrList;
+        for (int depth = 0; depth < 8 && cur != null; depth++) {
+            int id = cur.getId();
+            if (id == ID_SETTINGS_ACTIVITY || id == android.R.id.content) break;
+            if (cur != scrollOrList) {
+                if (cur.getPaddingLeft() != 0 || cur.getPaddingRight() != 0) {
+                    cur.setPadding(0, cur.getPaddingTop(), 0, cur.getPaddingBottom());
+                }
+                ViewGroup.LayoutParams lp = cur.getLayoutParams();
+                if (lp instanceof ViewGroup.MarginLayoutParams) {
+                    ViewGroup.MarginLayoutParams mlp = (ViewGroup.MarginLayoutParams) lp;
+                    if (mlp.leftMargin != 0 || mlp.rightMargin != 0) {
+                        mlp.leftMargin = 0;
+                        mlp.rightMargin = 0;
+                        mlp.setMarginStart(0);
+                        mlp.setMarginEnd(0);
+                        cur.setLayoutParams(mlp);
+                    }
+                }
+            }
+            if (id == ID_SETTINGS_CONTENT) break;
+            ViewParent p = cur.getParent();
+            cur = (p instanceof View) ? (View) p : null;
+        }
+    }
+
     private static void applySettingsRecyclerPadding(View rv, Activity activity) {
         Context ctx = rv.getContext();
         Activity act = (activity != null) ? activity : unwrapActivity(ctx);
-        int topPad = (act != null ? getSettingsAppBarBottom(act) : dp(ctx, 132)) + dp(ctx, 8);
+        normalizeSettingsHorizontalGutter(rv);
+        int topPad = (act != null ? getSettingsAppBarBottom(act) : dp(ctx, 132)) + dp(ctx, 12);
         int botPad = dp(ctx, 28);
         int oldTop = rv.getPaddingTop();
+        boolean atTopBefore = !rv.canScrollVertically(-1);
         if (rv.getPaddingLeft() != 0 || rv.getPaddingRight() != 0
                 || Math.abs(oldTop - topPad) > dp(ctx, 2)
                 || rv.getPaddingBottom() < botPad) {
             rv.setPadding(0, topPad, 0, botPad);
-            // If paddingTop grew from initial 0 after LinearLayoutManager's first pass, scroll back to top
-            // so the first section ("Basics" / "Search engine") sits cleanly below the Search bar!
-            if (oldTop < dp(ctx, 60) && topPad > oldTop) {
+            if (topPad > oldTop && (atTopBefore || oldTop < dp(ctx, 150))) {
                 try {
                     rv.scrollBy(0, -(topPad - oldTop));
                 } catch (Throwable ignored) {}
@@ -3172,8 +3873,9 @@ public final class CouiBrowserUiEnhancer {
         lv.setClipToPadding(false);
         attachCouiOverscroll(lv);
 
-        int appBarBot = (act != null) ? getSettingsAppBarBottom(act) : dp(ctx, 96);
-        int topPad = appBarBot + dp(ctx, 8);
+        normalizeSettingsHorizontalGutter(lv);
+        int appBarBot = (act != null) ? getSettingsAppBarBottom(act) : dp(ctx, 132);
+        int topPad = appBarBot + dp(ctx, 12);
         int botPad = dp(ctx, 28);
         int oldTop = lv.getPaddingTop();
         if (lv.getPaddingLeft() != 0 || lv.getPaddingRight() != 0
@@ -3187,6 +3889,19 @@ public final class CouiBrowserUiEnhancer {
             }
         }
 
+        // Compute exact remaining horizontal margin needed for cardTarget to hit 16dp from screen edges!
+        // Chromium's WideDisplayPadding may re-pad ListFragment's #ff0003 container to 16dp (52px on 520dpi)
+        // via OnLayoutChangeListener; subtracting lv's existing screen offset prevents 16dp + 16dp = 32dp double-inset!
+        int wantEdge = dp(ctx, 16);
+        int[] lvLoc = new int[2];
+        lv.getLocationInWindow(lvLoc);
+        int screenW = ctx.getResources().getDisplayMetrics().widthPixels;
+        int alreadyL = Math.max(0, lvLoc[0]);
+        int alreadyR = (lv.getWidth() > 0 && screenW > 0)
+                ? Math.max(0, screenW - (lvLoc[0] + lv.getWidth()))
+                : alreadyL;
+        int needCardMarginL = Math.max(0, wantEdge - alreadyL);
+        int needCardMarginR = Math.max(0, wantEdge - alreadyR);
         int childCount = lv.getChildCount();
         for (int i = 0; i < childCount; i++) {
             View row = lv.getChildAt(i);
@@ -3194,9 +3909,35 @@ public final class CouiBrowserUiEnhancer {
 
             View cardTarget = row.findViewById(ID_SE_CARD_CONTAINER);
             if (cardTarget == null) cardTarget = row;
-            // Remove extra outer row horizontal padding so Ldc3's 16dp card margin aligns 1:1 with Settings main
-            if (row != cardTarget && (row.getPaddingLeft() != 0 || row.getPaddingRight() != 0)) {
-                row.setPadding(0, row.getPaddingTop(), 0, row.getPaddingBottom());
+            // Remove extra outer row horizontal padding & enforce exact 16dp screen-edge card gutters!
+            if (row != cardTarget) {
+                if (row.getPaddingLeft() != 0 || row.getPaddingRight() != 0) {
+                    row.setPadding(0, row.getPaddingTop(), 0, row.getPaddingBottom());
+                }
+                ViewGroup.LayoutParams clp = cardTarget.getLayoutParams();
+                if (clp instanceof ViewGroup.MarginLayoutParams) {
+                    ViewGroup.MarginLayoutParams cmlp = (ViewGroup.MarginLayoutParams) clp;
+                    if (cmlp.leftMargin != needCardMarginL || cmlp.rightMargin != needCardMarginR
+                            || cmlp.width != ViewGroup.LayoutParams.MATCH_PARENT) {
+                        cmlp.leftMargin = needCardMarginL;
+                        cmlp.rightMargin = needCardMarginR;
+                        cmlp.setMarginStart(needCardMarginL);
+                        cmlp.setMarginEnd(needCardMarginR);
+                        cmlp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+                        cardTarget.setLayoutParams(cmlp);
+                    }
+                }
+            } else if (row instanceof TextView && !row.isClickable()) {
+                // Section header row inside SearchEngineSettings ("Recently visited", etc.): align cleanly at 32dp total screen inset
+                TextView htv = (TextView) row;
+                htv.setTextColor(dark ? 0x8AFFFFFF : 0xFF7F7F7F);
+                htv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+                htv.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+                int hPadL = Math.max(0, dp(ctx, 32) - alreadyL);
+                int hPadR = Math.max(0, dp(ctx, 16) - alreadyR);
+                if (htv.getPaddingLeft() != hPadL || htv.getPaddingRight() != hPadR) {
+                    htv.setPadding(hPadL, dp(ctx, 14), hPadR, dp(ctx, 8));
+                }
             }
 
             RadioButton rb = row.findViewById(ID_SE_RADIO_BUTTON);
@@ -3408,29 +4149,17 @@ public final class CouiBrowserUiEnhancer {
             applySettingsRecyclerPadding(recyclerView, act);
             attachCouiOverscroll(recyclerView);
 
-            // Re-keep top bar chrome (status bar, back button + progressive blur) locked across fragment transitions
+            // Re-keep top bar chrome (status bar, root large title vs inline title, persistent search pill & blur) synced
             if (act != null) {
                 styleEdgeToEdgeBaseLayout(act, canvasColor);
+                syncSettingsHeaderAndSearch(act, dark);
                 View root = act.findViewById(ID_SETTINGS_ACTIVITY);
                 if (root != null) {
-                    View tb = act.findViewById(ID_SETTINGS_TOOLBAR);
-                    if (tb instanceof ViewGroup) {
-                        ViewGroup tbg = (ViewGroup) tb;
-                        for (int j = 0; j < tbg.getChildCount(); j++) {
-                            View c = tbg.getChildAt(j);
-                            if (c instanceof ImageButton && c.getVisibility() != View.INVISIBLE) {
-                                c.setVisibility(View.INVISIBLE);
-                                c.setAlpha(0f);
-                                c.setClickable(false);
-                            } else if (c instanceof TextView && !(c instanceof EditText)) {
-                                ((TextView) c).setTextColor(dark ? 0xE6FFFFFF : 0xFF191919);
-                            } else if (c.getClass().getName().contains("ActionMenuView") && c.getVisibility() != View.GONE) {
-                                c.setVisibility(View.GONE);
-                            }
-                        }
-                    }
                     View blur = root.findViewWithTag(SETTINGS_TOP_BLUR_TAG);
-                    if (blur != null) blur.invalidate();
+                    if (blur instanceof CouiTopProgressiveBlurView) {
+                        ((CouiTopProgressiveBlurView) blur).syncHeight();
+                        blur.invalidate();
+                    }
                 }
             }
 
@@ -3512,16 +4241,31 @@ public final class CouiBrowserUiEnhancer {
             } catch (Throwable ignored) {}
         }
 
-        // Enforce uniform 16dp horizontal card margins across ALL Settings cards (prevents narrow/centered
-        // cards such as Address bar Top/Bottom radio group in address-bar-settings.jpg!)
+        // Enforce uniform 16dp screen-edge horizontal card margins across ALL Settings cards
+        // (compensating if parent RecyclerView already has a screen offset from WideDisplayPadding)
         if (bgCol != 0) {
-            int wantMarginH = dp(ctx, 16);
+            int wantEdge = dp(ctx, 16);
+            int alreadyL = 0;
+            int alreadyR = 0;
+            ViewParent vp = itemView.getParent();
+            if (vp instanceof View) {
+                View pv = (View) vp;
+                int[] pLoc = new int[2];
+                pv.getLocationInWindow(pLoc);
+                int screenW = ctx.getResources().getDisplayMetrics().widthPixels;
+                alreadyL = Math.max(0, pLoc[0] + pv.getPaddingLeft());
+                alreadyR = (pv.getWidth() > 0 && screenW > 0)
+                        ? Math.max(0, screenW - (pLoc[0] + pv.getWidth() - pv.getPaddingRight()))
+                        : alreadyL;
+            }
+            int wantMarginL = Math.max(0, wantEdge - alreadyL);
+            int wantMarginR = Math.max(0, wantEdge - alreadyR);
             ViewGroup.LayoutParams ilp = itemView.getLayoutParams();
             if (ilp instanceof ViewGroup.MarginLayoutParams) {
                 ViewGroup.MarginLayoutParams imlp = (ViewGroup.MarginLayoutParams) ilp;
-                if (imlp.leftMargin != wantMarginH || imlp.rightMargin != wantMarginH) {
-                    imlp.leftMargin = wantMarginH;
-                    imlp.rightMargin = wantMarginH;
+                if (imlp.leftMargin != wantMarginL || imlp.rightMargin != wantMarginR) {
+                    imlp.leftMargin = wantMarginL;
+                    imlp.rightMargin = wantMarginR;
                     itemView.setLayoutParams(imlp);
                 }
             }
@@ -6508,10 +7252,75 @@ public final class CouiBrowserUiEnhancer {
                         cardView.setTranslationY(0f);
                         cardView.setAlpha(1f);
                         if (navBar != null) navBar.setMenuMorphProgress(1f);
+                        if (blurController != null) blurController.update();
+                    }
+                }
+                invalidate();
+            }
+        };
+
+        // Cached software ALPHA_8 diffuse outer drop shadow (drawn strictly OUTSIDE cardView via clipOutPath
+        // so zero HWUI elevation shadow cutout / inner white box can EVER bleed through the frosted glass card!)
+        private Bitmap shadowBmp = null;
+        private int shadowBmpW = -1;
+        private int shadowBmpH = -1;
+        private final Paint shadowDrawPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        private final Path shadowClipPath = new Path();
+        private final RectF shadowClipRect = new RectF();
+
+        private void ensureFlyoutShadow(int cardW, int cardH) {
+            if (cardW <= 0 || cardH <= 0) return;
+            if (shadowBmp != null && shadowBmpW == cardW && shadowBmpH == cardH) return;
+            int pad = dp(activity, 26);
+            int bw = cardW + pad * 2;
+            int bh = cardH + pad * 2;
+            Bitmap bmp = Bitmap.createBitmap(bw, bh, Bitmap.Config.ALPHA_8);
+            Canvas c = new Canvas(bmp);
+            Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+            p.setColor(0xFF000000);
+            p.setMaskFilter(new android.graphics.BlurMaskFilter(dpF(activity, 18f), android.graphics.BlurMaskFilter.Blur.NORMAL));
+            float r = dpF(activity, 20f);
+            c.drawRoundRect(new RectF(pad, pad, pad + cardW, pad + cardH), r, r, p);
+            if (shadowBmp != null) shadowBmp.recycle();
+            shadowBmp = bmp;
+            shadowBmpW = cardW;
+            shadowBmpH = cardH;
+        }
+
+        @Override
+        protected void dispatchDraw(Canvas canvas) {
+            if (cardView != null && cardView.getVisibility() == View.VISIBLE && cardView.getAlpha() > 0.02f) {
+                int cw = cardView.getWidth();
+                int ch = cardView.getHeight();
+                if (cw > 0 && ch > 0) {
+                    ensureFlyoutShadow(cw, ch);
+                    if (shadowBmp != null) {
+                        int pad = dp(activity, 26);
+                        float r = dpF(activity, 20f);
+                        float cl = cardView.getLeft() + cardView.getTranslationX();
+                        float ct = cardView.getTop() + cardView.getTranslationY();
+                        float px = cl + cardView.getPivotX();
+                        float py = ct + cardView.getPivotY();
+                        float sx = cardView.getScaleX();
+                        float sy = cardView.getScaleY();
+                        int baseAlpha = isDark ? 0x54 : 0x22;
+                        int a = Math.max(0, Math.min(255, Math.round(baseAlpha * cardView.getAlpha())));
+                        if (a > 0) {
+                            int save = canvas.save();
+                            canvas.scale(sx, sy, px, py);
+                            shadowClipPath.rewind();
+                            shadowClipRect.set(cl, ct, cl + cw, ct + ch);
+                            shadowClipPath.addRoundRect(shadowClipRect, r, r, Path.Direction.CW);
+                            canvas.clipOutPath(shadowClipPath);
+                            shadowDrawPaint.setColorFilter(new PorterDuffColorFilter(Color.argb(a, 0, 0, 0), PorterDuff.Mode.SRC_IN));
+                            canvas.drawBitmap(shadowBmp, cl - pad, ct - pad + dpF(activity, 5f), shadowDrawPaint);
+                            canvas.restoreToCount(save);
+                        }
                     }
                 }
             }
-        };
+            super.dispatchDraw(canvas);
+        }
 
         private void startMenuSpringLoop() {
             if (animRunning) {
@@ -6527,6 +7336,12 @@ public final class CouiBrowserUiEnhancer {
             if (animRunning) {
                 animRunning = false;
                 Choreographer.getInstance().removeFrameCallback(menuSpringTick);
+            }
+            if (shadowBmp != null) {
+                shadowBmp.recycle();
+                shadowBmp = null;
+                shadowBmpW = -1;
+                shadowBmpH = -1;
             }
             stateMachine.release();
             super.onDetachedFromWindow();
@@ -6568,6 +7383,7 @@ public final class CouiBrowserUiEnhancer {
 
             // Top quick-action strip: Forward, Bookmark, Download page, Reload
             quickBar = new LinearLayout(activity);
+            quickBar.setBackgroundColor(Color.TRANSPARENT);
             quickBar.setOrientation(LinearLayout.HORIZONTAL);
             quickBar.setGravity(Gravity.CENTER_VERTICAL);
             quickBar.setPadding(dp(activity, 8), dp(activity, 8), dp(activity, 8), dp(activity, 6));
@@ -6610,10 +7426,12 @@ public final class CouiBrowserUiEnhancer {
 
             // Scrollable vertical menu rows
             ScrollView sv = new ScrollView(activity);
+            sv.setBackgroundColor(Color.TRANSPARENT);
             sv.setOverScrollMode(View.OVER_SCROLL_NEVER);
             sv.setVerticalScrollBarEnabled(false);
 
             listContainer = new LinearLayout(activity);
+            listContainer.setBackgroundColor(Color.TRANSPARENT);
             listContainer.setOrientation(LinearLayout.VERTICAL);
             listContainer.setPadding(dp(activity, 6), dp(activity, 6), dp(activity, 6), dp(activity, 8));
             buildMenuRows();
@@ -6775,21 +7593,24 @@ public final class CouiBrowserUiEnhancer {
             private final Paint rimPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             private final RectF cardRect = new RectF();
             private int maxHeightPx = Integer.MAX_VALUE;
+            private int lastGradW = -1, lastGradH = -1;
+            private boolean lastGradDark = false;
+            private LinearGradient cachedSheen = null;
+            private LinearGradient cachedRim = null;
 
             GlassFlyoutCardView(Context ctx) {
                 super(ctx);
                 setWillNotDraw(false);
-                setElevation(dpF(ctx, 18f));
-                if (Build.VERSION.SDK_INT >= 28) {
-                    setOutlineSpotShadowColor(0x40000000);
-                    setOutlineAmbientShadowColor(0x22000000);
-                }
+                // Round 16: Zero View elevation! Android HWUI's opaque-occluder shadow mesh punches a sharp
+                // 90-degree inner rectangle cutout while bleeding penumbra across the translucent rim (menu-white-box.jpg).
+                // Outer drop shadow is rendered cleanly in CouiGlassFlyoutOverlay.dispatchDraw() via clipOutPath().
+                setElevation(0f);
                 final float radiusPx = dpF(ctx, 20f);
                 setOutlineProvider(new ViewOutlineProvider() {
                     @Override
                     public void getOutline(View view, Outline outline) {
                         outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), radiusPx);
-                        outline.setAlpha(1.0f);
+                        outline.setAlpha(0f);
                     }
                 });
                 setClipToOutline(true);
@@ -6816,27 +7637,40 @@ public final class CouiBrowserUiEnhancer {
                 int h = getHeight();
                 if (w > 0 && h > 0) {
                     float r = dpF(getContext(), 20f);
-                    cardRect.set(0.75f, 0.75f, w - 0.75f, h - 0.75f);
+                    cardRect.set(0.5f, 0.5f, w - 0.5f, h - 0.5f);
                     boolean viewBlur = (navBar != null && navBar.drawViewBackdropBlur(canvas, this, cardRect, r));
                     boolean realBlur = viewBlur || ((navBar == null || !navBar.isInViewBackdropMode())
                             && blurController != null && blurController.isBlurActive());
                     if (realBlur) {
-                        // Vibrant luminous frosted glass matching gallery-menu-animation.mp4 (works on Webpages, NTP & Tab Switcher!)
-                        bgPaint.setColor(isDark ? 0x8A1E1E22 : 0x74FFFFFF);
+                        bgPaint.setColor(isDark ? 0x8A1E1E22 : 0x76FFFFFF);
                     } else {
                         bgPaint.setColor(isDark ? 0xF0222224 : 0xF5F8F9FB);
                     }
                     canvas.drawRoundRect(cardRect, r, r, bgPaint);
 
-                    LinearGradient sheen = new LinearGradient(
-                            0, 0, w * 0.55f, h * 0.75f,
-                            isDark
-                                    ? new int[]{0x28FFFFFF, 0x08FFFFFF, 0x10000000}
-                                    : new int[]{0x64FFFFFF, 0x1CFFFFFF, 0x14E8EEF6},
-                            new float[]{0f, 0.5f, 1f},
-                            Shader.TileMode.CLAMP
-                    );
-                    sheenPaint.setShader(sheen);
+                    if (w != lastGradW || h != lastGradH || isDark != lastGradDark
+                            || cachedSheen == null || cachedRim == null) {
+                        lastGradW = w;
+                        lastGradH = h;
+                        lastGradDark = isDark;
+                        cachedSheen = new LinearGradient(
+                                0, 0, 0, h,
+                                isDark
+                                        ? new int[]{0x22FFFFFF, 0x06FFFFFF, 0x10000000}
+                                        : new int[]{0x4CFFFFFF, 0x14FFFFFF, 0x10E8EEF6},
+                                new float[]{0f, 0.45f, 1f},
+                                Shader.TileMode.CLAMP
+                        );
+                        cachedRim = new LinearGradient(
+                                0, 0, w, h,
+                                isDark
+                                        ? new int[]{0x74FFFFFF, 0x22FFFFFF, 0x4CFFFFFF}
+                                        : new int[]{0xFFFFFFFF, 0x56FFFFFF, 0xE6FFFFFF},
+                                new float[]{0f, 0.5f, 1f},
+                                Shader.TileMode.CLAMP
+                        );
+                    }
+                    sheenPaint.setShader(cachedSheen);
                     canvas.drawRoundRect(cardRect, r, r, sheenPaint);
 
                     rimPaint.setShader(null);
@@ -6845,16 +7679,8 @@ public final class CouiBrowserUiEnhancer {
                     canvas.drawRoundRect(cardRect, r, r, rimPaint);
 
                     cardRect.inset(dpF(getContext(), 0.8f), dpF(getContext(), 0.8f));
-                    LinearGradient rimGrad = new LinearGradient(
-                            0, 0, w, h,
-                            isDark
-                                    ? new int[]{0x74FFFFFF, 0x22FFFFFF, 0x4CFFFFFF}
-                                    : new int[]{0xFFFFFFFF, 0x56FFFFFF, 0xE6FFFFFF},
-                            new float[]{0f, 0.5f, 1f},
-                            Shader.TileMode.CLAMP
-                    );
-                    rimPaint.setStrokeWidth(dpF(getContext(), 1.1f));
-                    rimPaint.setShader(rimGrad);
+                    rimPaint.setStrokeWidth(dpF(getContext(), 1.05f));
+                    rimPaint.setShader(cachedRim);
                     canvas.drawRoundRect(cardRect, r - dpF(getContext(), 0.8f), r - dpF(getContext(), 0.8f), rimPaint);
                 }
                 super.onDraw(canvas);

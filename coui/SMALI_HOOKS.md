@@ -48,6 +48,14 @@ against (`chromium-ChromePublic.apk-default-807807974`). Re-derive them for any 
 | `Lorg/chromium/content/browser/GestureListenerManagerImpl.f(FFF)` / `l()Z` / `onScrollBegin(Z)` / `updateOnTouchDown()` / `updateOnTouchUp()` | request `ALL_UPDATES (2)` scroll offset frequency in `l()Z` and forward viewport-compensated physical scroll pixel deltas & touch state into `CouiBrowserUiEnhancer.onWebScrollChanged/Begin/TouchDown/TouchUp` | Drives reliable synchronized auto-hide (`26dp` downward hide trigger, `12dp` upward micro-jitter deadzone, `28dp` upward reveal) directly from Viz/Blink compositor scroll deltas from Scroll 1 frame 1 — 100% immune to Android 15+ `InputOnViz` (`InputVizard`) touch transfer! |
 | `lib/arm64-v8a/libtitanium_rive.so` | 16KB-page-aligned native C++ Rive-architecture state-machine & ColorOS RK4 overscroll engine (`coui/native/titanium_rive_engine.cpp`) | Drives overflow menu spring physics (`scale 0.84 -> ~1.035 -> 1.00`, fast `~145ms` exit), `≡ <-> ×` menu icon morph, and cushioned `~520–580ms` Settings overscroll physics at 120Hz `Choreographer` vsync with 0% idle CPU. |
 
+## Round 16 — root Settings large title, persistent Settings search, NTP redesign, universal 16dp sub-settings parity & flyout white-box fix
+
+| Target | Patch | Why |
+|---|---|---|
+| `La7e.G(Landroid/view/View;Z)V` (`SettingsSearchCoordinator` show/hide transition) | bypass `TransitionManager` (`Fade` + `ChangeBounds`) and click-listener stripping; keep `p1` (`id/search_box`) `View.VISIBLE` whenever `this.F == 0` | Eliminates the jarring search bar disappear/reappear animation on sub-settings navigation (`titanium-search-broken-animation.mp4`) and preserves the tap listener across all screens. |
+| `La7e.K()V` (`updateSearchBoxVisibility`) | replace `invoke-virtual {p0}, La7e;->t()Z` check with `const/4 p0, 0x1` | Keeps the redesigned COUI `42dp` `"Search"` capsule persistently `View.VISIBLE` and tappable on every sub-settings screen while preserving `La7e.t()Z` for root `MainSettings` detection. |
+| `La7e.k()V` (`exitSearchState`) | unconditionally restore `id/search_box` (`0x7f010b05`) to `View.VISIBLE` when `v0 != null` | Ensures exiting an active Settings search from any sub-settings screen immediately restores the persistent search pill with zero flash. |
+
 ## Runtime notes (Java side)
 
 - The header glass is a dedicated, non-clickable child of `control_container`. It is appended last
