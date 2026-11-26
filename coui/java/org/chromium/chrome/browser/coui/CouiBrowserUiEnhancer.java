@@ -13,6 +13,8 @@ import android.graphics.BlendModeColorFilter;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.ColorFilter;
+import android.graphics.ColorMatrix;
+import android.graphics.ColorMatrixColorFilter;
 import android.graphics.LinearGradient;
 import android.graphics.Outline;
 import android.graphics.Paint;
@@ -41,15 +43,21 @@ import android.os.Bundle;
 import android.os.SystemClock;
 import android.text.Spannable;
 import android.text.Spanned;
+import android.text.TextUtils;
 import android.text.style.ForegroundColorSpan;
 import android.util.AttributeSet;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.util.TypedValue;
+import android.view.ActionMode;
+import android.view.Choreographer;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.KeyEvent;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.MotionEvent;
+import android.view.SearchEvent;
 import android.view.SurfaceControl;
 import android.view.SurfaceView;
 import android.view.View;
@@ -62,9 +70,12 @@ import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
+import android.view.accessibility.AccessibilityEvent;
 import android.view.animation.DecelerateInterpolator;
 import android.view.animation.Interpolator;
 import android.view.animation.OvershootInterpolator;
+import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.CompoundButton;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -75,6 +86,7 @@ import android.widget.ListView;
 import android.widget.RadioButton;
 import android.widget.RelativeLayout;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -140,6 +152,14 @@ public final class CouiBrowserUiEnhancer {
     private static final int ID_LOCATION_BAR_STATUS = 0x7f010726;
     private static final int ID_LOCATION_BAR_STATUS_ICON = 0x7f010727;
     private static final int ID_LOCATION_BAR_STATUS_ICON_VIEW = 0x7f010729;
+    private static final int ID_LOCATION_BAR_ATTACHMENTS = 0x7f010720;
+    private static final int ID_DELETE_BUTTON = 0x7f0103cf;
+    private static final int ID_NAVIGATE_BUTTON = 0x7f010853;
+    private static final int ID_MIC_BUTTON = 0x7f0107b8;
+    private static final int ID_LENS_BUTTON = 0x7f0106f4;
+    private static final int ID_FUSEBOX_PLUS_BUTTON = 0x7f0105c0;
+    private static final int ID_FUSEBOX_REQUEST_TYPE = 0x7f0105c4;
+    private static final int ID_FUSEBOX_CHIP = 0x7f0105b1;
     private static final int ID_CONTROL_CONTAINER = 0x7f010366;
     private static final int ID_TOOLBAR = 0x7f010d6a;
     private static final int ID_TOOLBAR_CONTAINER = 0x7f010d71;
@@ -221,20 +241,146 @@ public final class CouiBrowserUiEnhancer {
     private static final int ID_SEARCH_QUERY_CONTAINER = 0x7f010b1e;
     private static final int ID_SEARCH_BACK_ICON = 0x7f01018d;
     private static final int ID_SEARCH_EDIT_TEXT = 0x7f010b1d;
+    private static final int ID_ADDRESS_BAR_RADIO_GROUP = 0x7f0100be;
+    private static final int ID_ADDRESS_BAR_TOP = 0x7f0100bf;
+    private static final int ID_ADDRESS_BAR_BOTTOM = 0x7f0100bd;
+    private static final int ID_RADIO_BUTTON = 0x7f010a4b;
+    private static final int ID_RADIO_PRIMARY = 0x7f0109ee;
+    private static final int ID_RADIO_DESC = 0x7f0103d8;
 
     // ColorOS 17 ROM Haptic Feedback constants
     private static final int COUI_HAPTIC_SWITCH = 302;
     private static final int COUI_HAPTIC_OVERSCROLL = 307;
+    private static final int COUI_HAPTIC_SLIDER = 308;
 
     private static final Paint DIVIDER_PAINT = new Paint(Paint.ANTI_ALIAS_FLAG);
     private static final Paint CHEVRON_PAINT = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private static final Paint SWITCH_TRACK_PAINT = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private static final Paint SWITCH_THUMB_SHADOW_PAINT = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private static final Paint SWITCH_THUMB_PAINT = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private static final RectF SWITCH_RECT = new RectF();
     private static final Path CHEVRON_PATH = new Path();
+    private static Field sSwitchThumbPosField;
+    private static boolean sSwitchThumbPosResolved = false;
+    private static java.lang.ref.WeakReference<CouiLiquidGlassNavBar> sActiveNavBar;
 
     static {
         DIVIDER_PAINT.setStyle(Paint.Style.FILL);
-        CHEVRON_PAINT.setStyle(Paint.Style.STROKE);
-        CHEVRON_PAINT.setStrokeCap(Paint.Cap.ROUND);
-        CHEVRON_PAINT.setStrokeJoin(Paint.Join.ROUND);
+        CHEVRON_PAINT.setStyle(Paint.Style.FILL);
+        SWITCH_TRACK_PAINT.setStyle(Paint.Style.FILL);
+        SWITCH_THUMB_SHADOW_PAINT.setStyle(Paint.Style.FILL);
+        SWITCH_THUMB_PAINT.setStyle(Paint.Style.FILL);
+    }
+
+    /**
+     * Smali hook (LocationBarLayout.E(View, boolean)):
+     * Suppresses Chromium 156's Fusebox '+' button (0x7f0105c0), request-type chip (0x7f0105c4),
+     * activation chip (0x7f0105b1), attachments strip (0x7f010720), blue '>' navigate pill (0x7f010853),
+     * mic & lens buttons so typing a long query stays ultra-clean: [Search Icon] + [Single-line URL] + [X].
+     */
+    public static boolean shouldAllowOmniboxButton(View v, boolean wantVisible) {
+        if (!wantVisible || v == null) return false;
+        int id = v.getId();
+        if (id == ID_NAVIGATE_BUTTON
+                || id == ID_FUSEBOX_PLUS_BUTTON
+                || id == ID_FUSEBOX_REQUEST_TYPE
+                || id == ID_FUSEBOX_CHIP
+                || id == ID_LOCATION_BAR_ATTACHMENTS
+                || id == ID_MIC_BUTTON
+                || id == ID_LENS_BUTTON) {
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Smali hook (SwitchCompat.onDraw(Canvas)):
+     * Renders EVERY SwitchCompat & MaterialSwitch across Titanium Settings & sub-settings as an
+     * authentic borderless ColorOS 17 44x24dp pill switch (#E2E4E8/#48484A off, #0080FF/#1A8CFF on,
+     * crisp 20dp white circular thumb with 2dp inset, subtle shadow, and 1.26x mid-toggle liquid stretch).
+     */
+    public static boolean drawCouiSwitch(CompoundButton sw, Canvas canvas) {
+        if (sw == null || canvas == null) return false;
+        try {
+            Context ctx = sw.getContext();
+            boolean dark = isDarkMode(ctx);
+            int w = sw.getWidth();
+            int h = sw.getHeight();
+            if (w <= 0 || h <= 0) return false;
+
+            float pos = sw.isChecked() ? 1.0f : 0.0f;
+            if (!sSwitchThumbPosResolved) {
+                sSwitchThumbPosResolved = true;
+                try {
+                    Class<?> sc = Class.forName("androidx.appcompat.widget.SwitchCompat");
+                    sSwitchThumbPosField = sc.getDeclaredField("Q");
+                    sSwitchThumbPosField.setAccessible(true);
+                } catch (Throwable ignored) {}
+            }
+            if (sSwitchThumbPosField != null) {
+                try {
+                    pos = Math.max(0f, Math.min(1f, sSwitchThumbPosField.getFloat(sw)));
+                } catch (Throwable ignored) {}
+            }
+            if (sw.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL) {
+                pos = 1.0f - pos;
+            }
+
+            float trackW = dpF(ctx, 44f);
+            float trackH = dpF(ctx, 24f);
+            float inset = dpF(ctx, 2.2f);
+            float thumbD = trackH - inset * 2f; // ~19.6dp crisp white circle matching ColorOS 17
+
+            float cx = w - trackW * 0.5f;
+            if (w < trackW + dpF(ctx, 2f)) cx = w * 0.5f;
+            float cy = h * 0.5f;
+            float left = cx - trackW * 0.5f;
+            float top = cy - trackH * 0.5f;
+            float right = cx + trackW * 0.5f;
+            float bottom = cy + trackH * 0.5f;
+            float trackR = trackH * 0.5f;
+
+            float alphaScale = sw.isEnabled() ? 1.0f : 0.42f;
+            int offCol = dark ? 0xFF48484A : 0xFFE2E4E8;
+            int onCol = dark ? 0xFF1A8CFF : 0xFF0080FF;
+            int trackCol = blendArgb(offCol, onCol, pos);
+            if (alphaScale < 0.99f) {
+                trackCol = (trackCol & 0x00FFFFFF) | (Math.round(Color.alpha(trackCol) * alphaScale) << 24);
+            }
+
+            SWITCH_RECT.set(left, top, right, bottom);
+            SWITCH_TRACK_PAINT.setColor(trackCol);
+            canvas.drawRoundRect(SWITCH_RECT, trackR, trackR, SWITCH_TRACK_PAINT);
+
+            // ColorOS 17 liquid thumb stretch (1.26x horizontal stretch peaking at mid-toggle)
+            float stretch = 1.0f + 0.26f * (float) Math.sin(Math.PI * pos);
+            float thumbW = thumbD * stretch;
+            float travel = (trackW - inset * 2f) - thumbW;
+            float thumbLeft = left + inset + travel * pos;
+            float thumbTop = top + inset;
+            float thumbR = thumbD * 0.5f;
+
+            // Subtle ambient thumb shadow
+            SWITCH_RECT.set(thumbLeft, thumbTop + dpF(ctx, 0.8f), thumbLeft + thumbW, thumbTop + thumbD + dpF(ctx, 0.8f));
+            SWITCH_THUMB_SHADOW_PAINT.setColor(Color.argb(Math.round((dark ? 64 : 34) * alphaScale), 0, 0, 0));
+            canvas.drawRoundRect(SWITCH_RECT, thumbR, thumbR, SWITCH_THUMB_SHADOW_PAINT);
+
+            // Crisp white circular/pill thumb
+            SWITCH_RECT.set(thumbLeft, thumbTop, thumbLeft + thumbW, thumbTop + thumbD);
+            SWITCH_THUMB_PAINT.setColor(Color.argb(Math.round(255 * alphaScale), 255, 255, 255));
+            canvas.drawRoundRect(SWITCH_RECT, thumbR, thumbR, SWITCH_THUMB_PAINT);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private static int blendArgb(int c0, int c1, float t) {
+        int a = Math.round(Color.alpha(c0) + (Color.alpha(c1) - Color.alpha(c0)) * t);
+        int r = Math.round(Color.red(c0) + (Color.red(c1) - Color.red(c0)) * t);
+        int g = Math.round(Color.green(c0) + (Color.green(c1) - Color.green(c0)) * t);
+        int b = Math.round(Color.blue(c0) + (Color.blue(c1) - Color.blue(c0)) * t);
+        return Color.argb(a, r, g, b);
     }
 
     private CouiBrowserUiEnhancer() {}
@@ -498,6 +644,77 @@ public final class CouiBrowserUiEnhancer {
         } catch (Throwable ignored) {}
     }
 
+    private static CouiLiquidGlassNavBar resolveActiveNavBar(View hintView) {
+        if (hintView != null) {
+            Activity act = unwrapActivity(hintView.getContext());
+            if (act != null) {
+                ViewGroup content = act.findViewById(android.R.id.content);
+                if (content != null) {
+                    View nav = content.findViewWithTag(NAV_TAG);
+                    if (nav instanceof CouiLiquidGlassNavBar) return (CouiLiquidGlassNavBar) nav;
+                }
+            }
+            View root = hintView.getRootView();
+            if (root != null) {
+                View nav = root.findViewWithTag(NAV_TAG);
+                if (nav instanceof CouiLiquidGlassNavBar) return (CouiLiquidGlassNavBar) nav;
+            }
+        }
+        java.lang.ref.WeakReference<CouiLiquidGlassNavBar> ref = sActiveNavBar;
+        CouiLiquidGlassNavBar nav = (ref != null) ? ref.get() : null;
+        return (nav != null && nav.isAttachedToWindow()) ? nav : null;
+    }
+
+    /**
+     * Smali hook (GestureListenerManagerImpl.f(FFF) — native Viz/Blink scroll offset in physical px).
+     * Immune to Android 15+ InputOnViz (InputVizard) touch transfer; fires on EVERY webpage scroll frame!
+     */
+    public static void onWebScrollChanged(View containerView, int newScrollYPx, int oldScrollYPx) {
+        if (newScrollYPx == oldScrollYPx) return;
+        try {
+            if (containerView != null && !containerView.isAttachedToWindow()) return;
+            CouiLiquidGlassNavBar nav = resolveActiveNavBar(containerView);
+            if (nav != null) {
+                nav.onWebPageScrollChanged(newScrollYPx, oldScrollYPx);
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "onWebScrollChanged err", t);
+        }
+    }
+
+    /** Smali hook (GestureListenerManagerImpl.onScrollBegin(Z)) — native scroll start & direction. */
+    public static void onWebScrollBegin(View containerView, boolean isDirectionUp) {
+        try {
+            if (containerView != null && !containerView.isAttachedToWindow()) return;
+            CouiLiquidGlassNavBar nav = resolveActiveNavBar(containerView);
+            if (nav != null) {
+                nav.onWebPageScrollBegin(isDirectionUp);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /** Smali hook (GestureListenerManagerImpl.updateOnTouchDown()) — native touch down even under InputVizard. */
+    public static void onWebTouchDown(View containerView) {
+        try {
+            if (containerView != null && !containerView.isAttachedToWindow()) return;
+            CouiLiquidGlassNavBar nav = resolveActiveNavBar(containerView);
+            if (nav != null) {
+                nav.onWebPageTouchState(true);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /** Smali hook (GestureListenerManagerImpl.updateOnTouchUp()) — native touch up even under InputVizard. */
+    public static void onWebTouchUp(View containerView) {
+        try {
+            if (containerView != null && !containerView.isAttachedToWindow()) return;
+            CouiLiquidGlassNavBar nav = resolveActiveNavBar(containerView);
+            if (nav != null) {
+                nav.onWebPageTouchState(false);
+            }
+        } catch (Throwable ignored) {}
+    }
+
     /**
      * Round 12 + Round 13: Ensures Tab Switcher container (ID_TAB_SWITCHER_HOLDER) clears the status bar
      * by 1.30x AND restyles the entire Tab Switcher (Hub toolbar, '+' button, '[count | grid]' switcher,
@@ -728,10 +945,12 @@ public final class CouiBrowserUiEnhancer {
             hideHairlinesRecursive((ViewGroup) tabHolder);
         }
 
-        // 4. Tab Grid Cards inside tab_list_recycler_view (0x7f010cb2)
+        // 4. Tab Grid Cards inside tab_list_recycler_view (0x7f010cb2) + cushioned COUI overscroll
         View tabRv = tabHolder.findViewById(ID_TAB_LIST_RECYCLER_VIEW);
         if (tabRv instanceof ViewGroup) {
             ViewGroup rvg = (ViewGroup) tabRv;
+            rvg.setOverScrollMode(View.OVER_SCROLL_NEVER);
+            attachCouiOverscroll(rvg);
             int count = rvg.getChildCount();
             // First pass: check how many cards are detected as focused; if multiple cards exist,
             // verify each card's focused vs unfocused state from Chromium's incoming tint/text luminance.
@@ -767,20 +986,16 @@ public final class CouiBrowserUiEnhancer {
         }
     }
 
-    /** Crisp 1:1 ColorOS 17 '+' vector icon for the Tab Switcher top-left New Tab button. */
+    /** Crisp official Microsoft Fluent UI 24dp '+' vector icon for the Tab Switcher top-left New Tab button. */
     private static final class CouiPlusIconDrawable extends Drawable {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final int sizePx;
-        private final float armHalfLen;
         private boolean isDark;
 
         CouiPlusIconDrawable(Context ctx, boolean isDark) {
             this.isDark = isDark;
             this.sizePx = dp(ctx, 22f);
-            this.armHalfLen = dpF(ctx, 7.2f);
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeCap(Paint.Cap.ROUND);
-            paint.setStrokeWidth(dpF(ctx, 2.0f));
+            paint.setStyle(Paint.Style.FILL);
         }
 
         void setDarkMode(boolean dark) {
@@ -796,11 +1011,8 @@ public final class CouiBrowserUiEnhancer {
         @Override
         public void draw(Canvas canvas) {
             Rect b = getBounds();
-            float cx = b.exactCenterX();
-            float cy = b.exactCenterY();
             paint.setColor(isDark ? 0xE6FFFFFF : 0xFF191919);
-            canvas.drawLine(cx - armHalfLen, cy, cx + armHalfLen, cy, paint);
-            canvas.drawLine(cx, cy - armHalfLen, cx, cy + armHalfLen, paint);
+            FluentIcons.drawCentered(canvas, FluentIcons.ADD, b.exactCenterX(), b.exactCenterY(), sizePx, paint);
         }
 
         @Override public void setAlpha(int alpha) { paint.setAlpha(alpha); }
@@ -915,12 +1127,15 @@ public final class CouiBrowserUiEnhancer {
         }
         if (closeBtn != null) {
             closeBtn.clearColorFilter();
-            if (closeBtn.getImageTintList() != wantCloseCsl) {
-                closeBtn.setImageTintList(wantCloseCsl);
-            }
+            closeBtn.setImageTintList(null);
+            int wantCloseCol = wantCloseCsl.getDefaultColor();
             Drawable cd = closeBtn.getDrawable();
-            if (cd != null) {
-                cd.setTintList(wantCloseCsl);
+            if (cd instanceof FluentIcons.FluentDrawable) {
+                ((FluentIcons.FluentDrawable) cd).setColor(wantCloseCol);
+            } else {
+                closeBtn.setImageDrawable(new FluentIcons.FluentDrawable(
+                        closeBtn.getContext(), FluentIcons.DISMISS, 16.5f, wantCloseCol));
+                closeBtn.setScaleType(ImageView.ScaleType.CENTER);
             }
         }
         if (thumbView != null) {
@@ -979,6 +1194,10 @@ public final class CouiBrowserUiEnhancer {
             Drawable bg = v.getBackground();
             if (!(bg instanceof ColorDrawable) || ((ColorDrawable) bg).getColor() != canvasCol) {
                 v.setBackgroundColor(canvasCol);
+            }
+            if (v instanceof ScrollView || v.getClass().getName().contains("RecyclerView")) {
+                v.setOverScrollMode(View.OVER_SCROLL_NEVER);
+                if (v instanceof ViewGroup) attachCouiOverscroll((ViewGroup) v);
             }
             // Also paint immediate parent NativePage container if it holds a Material tonal fill
             ViewParent p = v.getParent();
@@ -1183,23 +1402,86 @@ public final class CouiBrowserUiEnhancer {
             hideTopToolbarButtons(w != null ? w.getDecorView() : content);
 
             View existing = content.findViewWithTag(NAV_TAG);
+            final CouiLiquidGlassNavBar navBar;
             if (existing instanceof CouiLiquidGlassNavBar) {
-                ((CouiLiquidGlassNavBar) existing).updateTheme();
+                navBar = (CouiLiquidGlassNavBar) existing;
+                navBar.updateTheme();
                 existing.bringToFront();
-                return;
+            } else {
+                navBar = new CouiLiquidGlassNavBar(activity);
+                navBar.setTag(NAV_TAG);
+                FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL
+                );
+                content.addView(navBar, lp);
+                navBar.bringToFront();
             }
-            final CouiLiquidGlassNavBar navBar = new CouiLiquidGlassNavBar(activity);
-            navBar.setTag(NAV_TAG);
-            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL
-            );
-            content.addView(navBar, lp);
-            navBar.bringToFront();
+            sActiveNavBar = new java.lang.ref.WeakReference<>(navBar);
+            installScrollTouchObserver(activity, navBar);
         } catch (Throwable t) {
             Log.w(TAG, "attachToBrowser failed", t);
         }
+    }
+
+    /** Wraps Activity Window.Callback once to observe vertical scroll touches for reliable auto-hide. */
+    private static void installScrollTouchObserver(Activity activity, CouiLiquidGlassNavBar navBar) {
+        if (activity == null || navBar == null) return;
+        Window w = activity.getWindow();
+        if (w == null) return;
+        Window.Callback cur = w.getCallback();
+        if (cur == null) return;
+        if (cur instanceof CouiScrollTouchCallback) {
+            ((CouiScrollTouchCallback) cur).navBar = navBar;
+            return;
+        }
+        w.setCallback(new CouiScrollTouchCallback(cur, navBar));
+    }
+
+    private static final class CouiScrollTouchCallback implements Window.Callback {
+        private final Window.Callback base;
+        CouiLiquidGlassNavBar navBar;
+
+        CouiScrollTouchCallback(Window.Callback base, CouiLiquidGlassNavBar navBar) {
+            this.base = base;
+            this.navBar = navBar;
+        }
+
+        @Override
+        public boolean dispatchTouchEvent(MotionEvent event) {
+            try {
+                if (navBar != null && event != null) {
+                    navBar.onWindowTouchEvent(event);
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "onWindowTouchEvent err", t);
+            }
+            return base.dispatchTouchEvent(event);
+        }
+
+        @Override public boolean dispatchKeyEvent(KeyEvent e) { return base.dispatchKeyEvent(e); }
+        @Override public boolean dispatchKeyShortcutEvent(KeyEvent e) { return base.dispatchKeyShortcutEvent(e); }
+        @Override public boolean dispatchTrackballEvent(MotionEvent e) { return base.dispatchTrackballEvent(e); }
+        @Override public boolean dispatchGenericMotionEvent(MotionEvent e) { return base.dispatchGenericMotionEvent(e); }
+        @Override public boolean dispatchPopulateAccessibilityEvent(AccessibilityEvent e) { return base.dispatchPopulateAccessibilityEvent(e); }
+        @Override public View onCreatePanelView(int f) { return base.onCreatePanelView(f); }
+        @Override public boolean onCreatePanelMenu(int f, Menu m) { return base.onCreatePanelMenu(f, m); }
+        @Override public boolean onPreparePanel(int f, View v, Menu m) { return base.onPreparePanel(f, v, m); }
+        @Override public boolean onMenuOpened(int f, Menu m) { return base.onMenuOpened(f, m); }
+        @Override public boolean onMenuItemSelected(int f, MenuItem item) { return base.onMenuItemSelected(f, item); }
+        @Override public void onWindowAttributesChanged(WindowManager.LayoutParams a) { base.onWindowAttributesChanged(a); }
+        @Override public void onContentChanged() { base.onContentChanged(); }
+        @Override public void onWindowFocusChanged(boolean hasFocus) { base.onWindowFocusChanged(hasFocus); }
+        @Override public void onAttachedToWindow() { base.onAttachedToWindow(); }
+        @Override public void onDetachedFromWindow() { base.onDetachedFromWindow(); }
+        @Override public void onPanelClosed(int f, Menu m) { base.onPanelClosed(f, m); }
+        @Override public boolean onSearchRequested() { return base.onSearchRequested(); }
+        @Override public boolean onSearchRequested(SearchEvent e) { return base.onSearchRequested(e); }
+        @Override public ActionMode onWindowStartingActionMode(ActionMode.Callback cb) { return base.onWindowStartingActionMode(cb); }
+        @Override public ActionMode onWindowStartingActionMode(ActionMode.Callback cb, int type) { return base.onWindowStartingActionMode(cb, type); }
+        @Override public void onActionModeStarted(ActionMode mode) { base.onActionModeStarted(mode); }
+        @Override public void onActionModeFinished(ActionMode mode) { base.onActionModeFinished(mode); }
     }
 
     /**
@@ -1668,6 +1950,69 @@ public final class CouiBrowserUiEnhancer {
                         statusContainer.setLayoutParams(slp);
                     }
                 }
+                // 4. Clean up long-query omnibox input (entering-search.jpg):
+                //    - Completely suppress Chromium 156 Fusebox '+' (0x7f0105c0), request-type (0x7f0105c4),
+                //      activation chip (0x7f0105b1), attachments (0x7f010720), blue '>' navigate pill (0x7f010853),
+                //      mic (0x7f0107b8), and lens (0x7f0106f4) so they NEVER peek under left icon or overlap 'X'.
+                int[] suppressOmniboxIds = {
+                    ID_FUSEBOX_PLUS_BUTTON,
+                    ID_FUSEBOX_REQUEST_TYPE,
+                    ID_FUSEBOX_CHIP,
+                    ID_LOCATION_BAR_ATTACHMENTS,
+                    ID_NAVIGATE_BUTTON,
+                    ID_MIC_BUTTON,
+                    ID_LENS_BUTTON
+                };
+                for (int sid : suppressOmniboxIds) {
+                    View sv = locBar.findViewById(sid);
+                    if (sv != null) {
+                        if (sv.getVisibility() != View.GONE) sv.setVisibility(View.GONE);
+                        if (sv.getAlpha() != 0f) sv.setAlpha(0f);
+                        if (sv.getScaleX() != 0.001f) sv.setScaleX(0.001f);
+                        if (sv.getScaleY() != 0.001f) sv.setScaleY(0.001f);
+                    }
+                }
+                // Style single clean Fluent 'X' clear button (delete_button 0x7f0103cf) centered vertically on right
+                View delBtn = locBar.findViewById(ID_DELETE_BUTTON);
+                if (delBtn instanceof ImageView) {
+                    ImageView div = (ImageView) delBtn;
+                    int xCol = isDark ? 0xB3FFFFFF : 0xFF686D74;
+                    div.clearColorFilter();
+                    div.setImageTintList(null);
+                    Drawable dd = div.getDrawable();
+                    if (dd instanceof FluentIcons.FluentDrawable) {
+                        ((FluentIcons.FluentDrawable) dd).setColor(xCol);
+                    } else {
+                        div.setImageDrawable(new FluentIcons.FluentDrawable(activity, FluentIcons.DISMISS, 18f, xCol));
+                        div.setScaleType(ImageView.ScaleType.CENTER);
+                    }
+                    if (div.getPaddingTop() != 0 || div.getPaddingBottom() != 0) {
+                        div.setPadding(dp(activity, 6), 0, dp(activity, 2), 0);
+                    }
+                    ViewGroup.LayoutParams dlp = div.getLayoutParams();
+                    if (dlp != null) {
+                        int wantW = dp(activity, 32);
+                        boolean dChanged = false;
+                        if (dlp.height != ViewGroup.LayoutParams.MATCH_PARENT) {
+                            dlp.height = ViewGroup.LayoutParams.MATCH_PARENT;
+                            dChanged = true;
+                        }
+                        if (dlp.width != wantW) {
+                            dlp.width = wantW;
+                            dChanged = true;
+                        }
+                        if (dlp instanceof ViewGroup.MarginLayoutParams) {
+                            ViewGroup.MarginLayoutParams dmlp = (ViewGroup.MarginLayoutParams) dlp;
+                            if (dmlp.topMargin != 0 || dmlp.bottomMargin != 0 || dmlp.rightMargin != 0) {
+                                dmlp.topMargin = 0;
+                                dmlp.bottomMargin = 0;
+                                dmlp.rightMargin = 0;
+                                dChanged = true;
+                            }
+                        }
+                        if (dChanged) div.setLayoutParams(dlp);
+                    }
+                }
                 if (urlBar instanceof TextView) {
                     TextView tv = (TextView) urlBar;
                     int wantCol = isDark ? 0xF2FFFFFF : 0xFF191919;
@@ -1675,11 +2020,36 @@ public final class CouiBrowserUiEnhancer {
                     if (tv.getCurrentTextColor() != wantCol) tv.setTextColor(wantCol);
                     if (tv.getCurrentHintTextColor() != wantHint) tv.setHintTextColor(wantHint);
                     enforceUrlBarSpanContrast(tv, isDark);
+                    // Enforce single-line horizontally scrolling input so long queries NEVER wrap or clip!
+                    if (tv.getMaxLines() != 1) {
+                        tv.setSingleLine(true);
+                        tv.setMaxLines(1);
+                    }
+                    tv.setHorizontallyScrolling(true);
+                    if (focused) {
+                        if (tv.getEllipsize() != null) tv.setEllipsize(null);
+                    } else if (tv.getEllipsize() != TextUtils.TruncateAt.END) {
+                        tv.setEllipsize(TextUtils.TruncateAt.END);
+                    }
+                    if (tv.getIncludeFontPadding()) {
+                        tv.setIncludeFontPadding(false);
+                    }
                     if ((tv.getGravity() & Gravity.VERTICAL_GRAVITY_MASK) != Gravity.CENTER_VERTICAL) {
                         tv.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
                     }
-                    if (tv.getPaddingTop() != 0 || tv.getPaddingBottom() != 0) {
-                        tv.setPadding(tv.getPaddingLeft(), 0, Math.max(tv.getPaddingRight(), dp(activity, 6)), 0);
+                    int wantRightPad = (delBtn != null && delBtn.getVisibility() == View.VISIBLE)
+                            ? dp(activity, 6) : dp(activity, 6);
+                    if (tv.getPaddingTop() != 0 || tv.getPaddingBottom() != 0 || tv.getPaddingRight() != wantRightPad) {
+                        tv.setPadding(tv.getPaddingLeft(), 0, wantRightPad, 0);
+                    }
+                    ViewGroup.LayoutParams ulp = tv.getLayoutParams();
+                    if (ulp != null && ulp.height != ViewGroup.LayoutParams.MATCH_PARENT) {
+                        ulp.height = ViewGroup.LayoutParams.MATCH_PARENT;
+                        if (ulp instanceof ViewGroup.MarginLayoutParams) {
+                            ((ViewGroup.MarginLayoutParams) ulp).topMargin = 0;
+                            ((ViewGroup.MarginLayoutParams) ulp).bottomMargin = 0;
+                        }
+                        tv.setLayoutParams(ulp);
                     }
                     float wantSizePx = TypedValue.applyDimension(
                             TypedValue.COMPLEX_UNIT_SP, 15.5f, activity.getResources().getDisplayMetrics());
@@ -1961,31 +2331,20 @@ public final class CouiBrowserUiEnhancer {
     }
 
     /**
-     * Round 11: 1:1 ColorOS 17 Settings search magnifying glass, measured from settings-search-example.jpg
-     * at 520dpi: lens radius 6.45dp (to stroke center), 1.55dp round stroke, 45° handle ending at 1.99r,
-     * #686D74. The VISUAL bounding box (lens + handle) is centered in the drawable bounds, so the glyph is
-     * optically dead-center inside the pill (not the lens alone).
+     * Official Microsoft Fluent UI 24dp search magnifying glass (fluent:search-24-regular)
+     * rendered cleanly centered at 19.5dp optical size inside the 40dp address pill.
      */
     static final class CouiSearchGlassIconDrawable extends Drawable {
-        private final Context ctx;
         private boolean isDark;
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final int sizePx;
-        private final float lensR;
-        private final float handleEnd;
-        private final float centerShift;
+        private final float glyphPx;
 
         CouiSearchGlassIconDrawable(Context ctx, boolean isDark) {
-            this.ctx = ctx;
             this.isDark = isDark;
             this.sizePx = dp(ctx, 20f);
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeCap(Paint.Cap.ROUND);
-            paint.setStrokeJoin(Paint.Join.ROUND);
-            paint.setStrokeWidth(dpF(ctx, 1.55f));
-            lensR = dpF(ctx, 6.45f);
-            handleEnd = lensR * 1.99f * 0.70710678f;   // per-axis offset of the handle tip
-            centerShift = (handleEnd - lensR) * 0.5f;   // shift lens so lens+handle bbox is centered
+            this.glyphPx = dpF(ctx, 19.5f);
+            paint.setStyle(Paint.Style.FILL);
         }
 
         void setDarkMode(boolean dark) {
@@ -2001,12 +2360,8 @@ public final class CouiBrowserUiEnhancer {
         @Override
         public void draw(Canvas canvas) {
             Rect b = getBounds();
-            float gx = b.exactCenterX() - centerShift;
-            float gy = b.exactCenterY() - centerShift;
             paint.setColor(isDark ? 0xB3FFFFFF : 0xFF686D74);
-            canvas.drawCircle(gx, gy, lensR, paint);
-            float hs = lensR * 0.70710678f;
-            canvas.drawLine(gx + hs, gy + hs, gx + handleEnd, gy + handleEnd, paint);
+            FluentIcons.drawCentered(canvas, FluentIcons.SEARCH_REGULAR, b.exactCenterX(), b.exactCenterY(), glyphPx, paint);
         }
 
         @Override public void setAlpha(int alpha) { paint.setAlpha(alpha); }
@@ -2518,11 +2873,276 @@ public final class CouiBrowserUiEnhancer {
         } else if (view instanceof ListView) {
             styleSettingsListView(activity, (ListView) view, dark, canvasColor);
             return;
+        } else if (view instanceof ScrollView || cls.contains("NestedScrollView")) {
+            view.setBackgroundColor(canvasColor);
+            applySettingsRecyclerPadding(view, activity);
+            view.setOverScrollMode(View.OVER_SCROLL_NEVER);
+            if (view instanceof ViewGroup) {
+                attachCouiOverscroll((ViewGroup) view);
+            }
         }
+        styleCouiControlsRecursive(view, dark);
         if (view instanceof ViewGroup) {
             ViewGroup vg = (ViewGroup) view;
             for (int i = 0; i < vg.getChildCount(); i++) {
                 styleSettingsTree(activity, vg.getChildAt(i), dark, canvasColor);
+            }
+        }
+    }
+
+    /** Styles RadioButtonWithDescriptionLayout, CheckBoxes, SeekBars, and Buttons anywhere inside Settings. */
+    private static void styleCouiControlsRecursive(View v, boolean dark) {
+        if (v == null) return;
+        Context ctx = v.getContext();
+        String cls = v.getClass().getName();
+
+        if (cls.contains("RadioButtonWithDescriptionLayout") && v instanceof ViewGroup) {
+            styleCouiRadioGroupCard((ViewGroup) v, dark);
+            return;
+        }
+        if (v instanceof RadioButton) {
+            styleCouiRadioButton((RadioButton) v, dark);
+        } else if (v instanceof CheckBox) {
+            styleCouiCheckBox((CheckBox) v, dark);
+        } else if (v instanceof SeekBar) {
+            styleCouiSeekBar((SeekBar) v, dark);
+        } else if (v instanceof Button && !(v instanceof CompoundButton)) {
+            styleCouiButton((Button) v, dark);
+        }
+    }
+
+    /**
+     * Full ColorOS 17 refactor for RadioButtonWithDescriptionLayout cards across ALL sub-settings
+     * (Address bar Top/Bottom, Appearance/Theme, Homepage, Cookies, WebRTC, Site settings, Do Not Track):
+     * - Eliminates excessive horizontal margins that shrink cards toward center (address-bar-settings.jpg).
+     * - Replaces M3 double-ring radio buttons with authentic borderless ColorOS 17 #0080FF/#1A8CFF radios.
+     * - Applies uniform 16dp horizontal / 14dp vertical padding, 16sp Medium titles, 13sp muted descriptions,
+     *   and thin 0.5dp-0.75dp 16dp-inset hairline dividers between options inside the same card.
+     */
+    private static void styleCouiRadioGroupCard(ViewGroup group, boolean dark) {
+        Context ctx = group.getContext();
+        // Zero any extra margins/padding on RadioButtonWithDescriptionLayout itself so its parent card
+        // spans the full screen width with exact 16dp left/right gutters!
+        ViewGroup.LayoutParams glp = group.getLayoutParams();
+        if (glp instanceof ViewGroup.MarginLayoutParams) {
+            ViewGroup.MarginLayoutParams gmlp = (ViewGroup.MarginLayoutParams) glp;
+            if (gmlp.leftMargin != 0 || gmlp.rightMargin != 0 || gmlp.width != ViewGroup.LayoutParams.MATCH_PARENT) {
+                gmlp.leftMargin = 0;
+                gmlp.rightMargin = 0;
+                gmlp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+                group.setLayoutParams(gmlp);
+            }
+        }
+        if (group.getPaddingLeft() != 0 || group.getPaddingRight() != 0) {
+            group.setPadding(0, group.getPaddingTop(), 0, group.getPaddingBottom());
+        }
+
+        // Also enforce exact 16dp horizontal margin on the parent card item inside RecyclerView
+        ViewParent p = group.getParent();
+        if (p instanceof View) {
+            View cardRoot = (View) p;
+            int wantMargin = dp(ctx, 16);
+            ViewGroup.LayoutParams clp = cardRoot.getLayoutParams();
+            if (clp instanceof ViewGroup.MarginLayoutParams) {
+                ViewGroup.MarginLayoutParams cmlp = (ViewGroup.MarginLayoutParams) clp;
+                if (cmlp.leftMargin != wantMargin || cmlp.rightMargin != wantMargin
+                        || cmlp.width != ViewGroup.LayoutParams.MATCH_PARENT) {
+                    cmlp.leftMargin = wantMargin;
+                    cmlp.rightMargin = wantMargin;
+                    cmlp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+                    cardRoot.setLayoutParams(cmlp);
+                }
+            }
+            if (cardRoot.getPaddingLeft() != 0 || cardRoot.getPaddingRight() != 0) {
+                cardRoot.setPadding(0, cardRoot.getPaddingTop(), 0, cardRoot.getPaddingBottom());
+            }
+        }
+
+        // Count visible option rows so we draw hairline dividers strictly between adjacent rows
+        List<View> visibleRows = new ArrayList<>();
+        for (int i = 0; i < group.getChildCount(); i++) {
+            View row = group.getChildAt(i);
+            if (row != null && row.getVisibility() == View.VISIBLE) {
+                visibleRows.add(row);
+            }
+        }
+
+        int padH = dp(ctx, 16);
+        int padV = dp(ctx, 14);
+        int minH = dp(ctx, 54);
+        int radioEndMargin = dp(ctx, 14);
+        for (int idx = 0; idx < visibleRows.size(); idx++) {
+            View row = visibleRows.get(idx);
+            ViewGroup.LayoutParams rlp = row.getLayoutParams();
+            if (rlp instanceof ViewGroup.MarginLayoutParams) {
+                ViewGroup.MarginLayoutParams rmlp = (ViewGroup.MarginLayoutParams) rlp;
+                if (rmlp.leftMargin != 0 || rmlp.rightMargin != 0 || rmlp.width != ViewGroup.LayoutParams.MATCH_PARENT) {
+                    rmlp.leftMargin = 0;
+                    rmlp.rightMargin = 0;
+                    rmlp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+                    row.setLayoutParams(rmlp);
+                }
+            }
+            if (row.getPaddingLeft() != padH || row.getPaddingRight() != padH
+                    || row.getPaddingTop() != padV || row.getPaddingBottom() != padV) {
+                row.setPadding(padH, padV, padH, padV);
+            }
+            if (row.getMinimumHeight() < minH) {
+                row.setMinimumHeight(minH);
+            }
+
+            RadioButton rb = row.findViewById(ID_RADIO_BUTTON);
+            if (rb == null) rb = findRadioButtonRecursive(row);
+            if (rb != null) {
+                styleCouiRadioButton(rb, dark);
+                ViewGroup.LayoutParams blp = rb.getLayoutParams();
+                if (blp instanceof ViewGroup.MarginLayoutParams) {
+                    ViewGroup.MarginLayoutParams bmlp = (ViewGroup.MarginLayoutParams) blp;
+                    if (bmlp.getMarginEnd() != radioEndMargin || bmlp.getMarginStart() != 0) {
+                        bmlp.setMarginStart(0);
+                        bmlp.setMarginEnd(radioEndMargin);
+                        rb.setLayoutParams(bmlp);
+                    }
+                }
+            }
+
+            // Style primary title & description typography inside RadioButtonWithDescription
+            View prim = row.findViewById(ID_RADIO_PRIMARY);
+            if (prim == null) prim = row.findViewById(0x7f010d49);
+            if (prim instanceof TextView) {
+                TextView tv = (TextView) prim;
+                tv.setTextColor(dark ? 0xE6FFFFFF : 0xFF191919);
+                tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f);
+                tv.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            }
+            View desc = row.findViewById(ID_RADIO_DESC);
+            if (desc instanceof TextView) {
+                TextView tv = (TextView) desc;
+                tv.setTextColor(dark ? 0x73FFFFFF : 0xFF8C8C8C);
+                tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+                tv.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+            }
+
+            boolean drawDiv = (idx + 1 < visibleRows.size());
+            Drawable fg = row.getForeground();
+            if (fg instanceof CouiListRowOverlayDrawable) {
+                ((CouiListRowOverlayDrawable) fg).update(dark, drawDiv, false);
+            } else {
+                row.setForeground(new CouiListRowOverlayDrawable(ctx, dark, drawDiv, false));
+            }
+        }
+    }
+
+    private static RadioButton findRadioButtonRecursive(View v) {
+        if (v instanceof RadioButton) return (RadioButton) v;
+        if (v instanceof ViewGroup) {
+            ViewGroup vg = (ViewGroup) v;
+            for (int i = 0; i < vg.getChildCount(); i++) {
+                RadioButton r = findRadioButtonRecursive(vg.getChildAt(i));
+                if (r != null) return r;
+            }
+        }
+        return null;
+    }
+
+    private static void styleCouiCheckBox(CheckBox cb, boolean dark) {
+        if (cb == null) return;
+        String tag = "coui_cb_" + (dark ? "d" : "l");
+        if (tag.equals(cb.getTag())) return;
+        cb.setTag(tag);
+        cb.setButtonTintList(null);
+        cb.setButtonDrawable(new CouiCheckBoxDrawable(cb.getContext(), dark));
+    }
+
+    private static final class CouiCheckBoxDrawable extends Drawable {
+        private final Context ctx;
+        private final boolean isDark;
+        private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF rf = new RectF();
+        private final int sizePx;
+        private boolean checked = false;
+
+        CouiCheckBoxDrawable(Context ctx, boolean isDark) {
+            this.ctx = ctx;
+            this.isDark = isDark;
+            this.sizePx = dp(ctx, 22);
+        }
+
+        @Override public int getIntrinsicWidth() { return sizePx; }
+        @Override public int getIntrinsicHeight() { return sizePx; }
+        @Override public boolean isStateful() { return true; }
+
+        @Override
+        protected boolean onStateChange(int[] state) {
+            boolean now = false;
+            if (state != null) {
+                for (int s : state) {
+                    if (s == android.R.attr.state_checked) { now = true; break; }
+                }
+            }
+            if (now != checked) { checked = now; invalidateSelf(); return true; }
+            return false;
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            Rect b = getBounds();
+            float cx = b.exactCenterX();
+            float cy = b.exactCenterY();
+            float half = dpF(ctx, 9.5f);
+            float rad = dpF(ctx, 5.5f);
+            rf.set(cx - half, cy - half, cx + half, cy + half);
+            if (checked) {
+                p.setStyle(Paint.Style.FILL);
+                p.setColor(isDark ? 0xFF1A8CFF : 0xFF0080FF);
+                canvas.drawRoundRect(rf, rad, rad, p);
+                p.setColor(0xFFFFFFFF);
+                FluentIcons.drawCentered(canvas, FluentIcons.CHECKMARK, cx, cy, dpF(ctx, 14f), p);
+            } else {
+                p.setStyle(Paint.Style.STROKE);
+                p.setStrokeWidth(dpF(ctx, 1.6f));
+                p.setColor(isDark ? 0xFF48484A : 0xFFC4C7CC);
+                rf.inset(dpF(ctx, 0.8f), dpF(ctx, 0.8f));
+                canvas.drawRoundRect(rf, rad, rad, p);
+            }
+        }
+
+        @Override public void setAlpha(int a) {}
+        @Override public void setColorFilter(ColorFilter cf) {}
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+    }
+
+    private static void styleCouiSeekBar(SeekBar sb, boolean dark) {
+        if (sb == null) return;
+        String tag = "coui_sb_" + (dark ? "d" : "l");
+        if (tag.equals(sb.getTag())) return;
+        sb.setTag(tag);
+        int accent = dark ? 0xFF1A8CFF : 0xFF0080FF;
+        sb.setProgressTintList(ColorStateList.valueOf(accent));
+        sb.setProgressBackgroundTintList(ColorStateList.valueOf(dark ? 0x26FFFFFF : 0x16000000));
+        sb.setThumbTintList(ColorStateList.valueOf(accent));
+    }
+
+    private static void styleCouiButton(Button btn, boolean dark) {
+        if (btn == null) return;
+        String tag = "coui_btn_" + (dark ? "d" : "l");
+        if (tag.equals(btn.getTag())) return;
+        btn.setTag(tag);
+        btn.setAllCaps(false);
+        btn.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        int accent = dark ? 0xFF1A8CFF : 0xFF0080FF;
+        ColorStateList bgTint = btn.getBackgroundTintList();
+        if (bgTint != null) {
+            int defCol = bgTint.getDefaultColor();
+            // Convert M3 slate-blue filled buttons to vibrant ColorOS 17 capsule pill buttons
+            if (Color.alpha(defCol) > 120 && colorLuminance(defCol) < 0.72f) {
+                btn.setBackgroundTintList(ColorStateList.valueOf(accent));
+                btn.setTextColor(0xFFFFFFFF);
+            }
+        } else {
+            int tc = btn.getCurrentTextColor();
+            if (Color.blue(tc) > Color.red(tc) + 15) {
+                btn.setTextColor(accent);
             }
         }
     }
@@ -2759,16 +3379,11 @@ public final class CouiBrowserUiEnhancer {
                 }
             }
             if (drawChevron) {
+                chevPaint.setStyle(Paint.Style.FILL);
                 chevPaint.setColor(isDark ? 0x66FFFFFF : 0xFFB2B2B2);
                 float cy = b.exactCenterY();
-                float tipX = b.right - dpF(ctx, 18f);
-                float baseX = tipX - dpF(ctx, 4.8f);
-                float halfH = dpF(ctx, 4.8f);
-                chevPath.rewind();
-                chevPath.moveTo(baseX, cy - halfH);
-                chevPath.lineTo(tipX, cy);
-                chevPath.lineTo(baseX, cy + halfH);
-                canvas.drawPath(chevPath, chevPaint);
+                float cx = b.right - dpF(ctx, 20f);
+                FluentIcons.drawCentered(canvas, FluentIcons.CHEVRON_RIGHT, cx, cy, dpF(ctx, 16f), chevPaint);
             }
         }
 
@@ -2829,11 +3444,10 @@ public final class CouiBrowserUiEnhancer {
             float dividerHeight = Math.max(1f, dpF(ctx, 0.75f));
             DIVIDER_PAINT.setColor(dark ? 0x24FFFFFF : 0x14000000);
 
+            CHEVRON_PAINT.setStyle(Paint.Style.FILL);
             CHEVRON_PAINT.setColor(dark ? 0x66FFFFFF : 0xFFB2B2B2);
-            CHEVRON_PAINT.setStrokeWidth(dpF(ctx, 1.85f));
-            float chevHalfH = dpF(ctx, 4.8f);
-            float chevW = dpF(ctx, 4.8f);
-            float chevRightMargin = dpF(ctx, 18f);
+            float chevSize = dpF(ctx, 16f);
+            float chevRightMargin = dpF(ctx, 20f);
 
             int childCount = recyclerView.getChildCount();
             for (int i = 0; i < childCount; i++) {
@@ -2866,16 +3480,11 @@ public final class CouiBrowserUiEnhancer {
                         }
                     }
 
-                    // Draw native COUI '>' right chevron on clickable non-switch preference rows
+                    // Draw official Microsoft Fluent UI '>' right chevron on clickable non-switch preference rows
                     if (kind == RowKind.CARD_ROW && child.isClickable()) {
                         float cy = (child.getTop() + child.getBottom()) * 0.5f + child.getTranslationY();
-                        float tipX = child.getRight() - chevRightMargin;
-                        float baseX = tipX - chevW;
-                        CHEVRON_PATH.reset();
-                        CHEVRON_PATH.moveTo(baseX, cy - chevHalfH);
-                        CHEVRON_PATH.lineTo(tipX, cy);
-                        CHEVRON_PATH.lineTo(baseX, cy + chevHalfH);
-                        canvas.drawPath(CHEVRON_PATH, CHEVRON_PAINT);
+                        float cx = child.getRight() - chevRightMargin;
+                        FluentIcons.drawCentered(canvas, FluentIcons.CHEVRON_RIGHT, cx, cy, chevSize, CHEVRON_PAINT);
                     }
                 }
             }
@@ -2903,6 +3512,33 @@ public final class CouiBrowserUiEnhancer {
             } catch (Throwable ignored) {}
         }
 
+        // Enforce uniform 16dp horizontal card margins across ALL Settings cards (prevents narrow/centered
+        // cards such as Address bar Top/Bottom radio group in address-bar-settings.jpg!)
+        if (bgCol != 0) {
+            int wantMarginH = dp(ctx, 16);
+            ViewGroup.LayoutParams ilp = itemView.getLayoutParams();
+            if (ilp instanceof ViewGroup.MarginLayoutParams) {
+                ViewGroup.MarginLayoutParams imlp = (ViewGroup.MarginLayoutParams) ilp;
+                if (imlp.leftMargin != wantMarginH || imlp.rightMargin != wantMarginH) {
+                    imlp.leftMargin = wantMarginH;
+                    imlp.rightMargin = wantMarginH;
+                    itemView.setLayoutParams(imlp);
+                }
+            }
+        }
+
+        // Handle RadioButtonWithDescriptionLayout preference cards (Address bar, Theme, Cookies, WebRTC, etc.)
+        if (itemView instanceof ViewGroup) {
+            View radioGroup = itemView.findViewById(ID_ADDRESS_BAR_RADIO_GROUP);
+            if (radioGroup == null) {
+                radioGroup = findViewByClassNameContains((ViewGroup) itemView, "RadioButtonWithDescriptionLayout");
+            }
+            if (radioGroup instanceof ViewGroup) {
+                styleCouiRadioGroupCard((ViewGroup) radioGroup, dark);
+                return RowKind.OTHER;
+            }
+        }
+
         // Strip left icon views (android.R.id.icon & icon_frame) for 1:1 text-only ColorOS 17 rows
         View iconView = itemView.findViewById(android.R.id.icon);
         if (iconView != null && iconView.getVisibility() != View.GONE) {
@@ -2916,6 +3552,7 @@ public final class CouiBrowserUiEnhancer {
             }
         }
         hideIconFramesRecursive(itemView);
+        styleCouiControlsRecursive(itemView, dark);
 
         TextView titleTv = itemView.findViewById(android.R.id.title);
         TextView summaryTv = itemView.findViewById(android.R.id.summary);
@@ -2948,7 +3585,13 @@ public final class CouiBrowserUiEnhancer {
         }
 
         if (toggle != null && toggle.getVisibility() == View.VISIBLE) {
-            styleCouiSwitch(toggle, dark);
+            if (toggle instanceof RadioButton) {
+                styleCouiRadioButton((RadioButton) toggle, dark);
+            } else if (toggle instanceof CheckBox) {
+                styleCouiCheckBox((CheckBox) toggle, dark);
+            } else {
+                styleCouiSwitch(toggle, dark);
+            }
             int padL = dp(ctx, 16);
             int padR = dp(ctx, 16);
             if (itemView.getPaddingLeft() != padL || itemView.getPaddingRight() != padR) {
@@ -2959,7 +3602,7 @@ public final class CouiBrowserUiEnhancer {
 
         if (titleTv != null) {
             int padL = dp(ctx, 16);
-            int padR = dp(ctx, 34); // Reserve right space for the COUI '>' chevron
+            int padR = dp(ctx, 36); // Reserve right space for the Fluent '>' chevron
             if (itemView.getPaddingLeft() != padL || itemView.getPaddingRight() != padR) {
                 itemView.setPadding(padL, itemView.getPaddingTop(), padR, itemView.getPaddingBottom());
             }
@@ -2967,6 +3610,18 @@ public final class CouiBrowserUiEnhancer {
         }
 
         return RowKind.OTHER;
+    }
+
+    private static View findViewByClassNameContains(ViewGroup vg, String token) {
+        for (int i = 0; i < vg.getChildCount(); i++) {
+            View c = vg.getChildAt(i);
+            if (c.getClass().getName().contains(token)) return c;
+            if (c instanceof ViewGroup) {
+                View f = findViewByClassNameContains((ViewGroup) c, token);
+                if (f != null) return f;
+            }
+        }
+        return null;
     }
 
     private static void hideIconFramesRecursive(View v) {
@@ -3064,8 +3719,10 @@ public final class CouiBrowserUiEnhancer {
     }
 
     /**
-     * Attaches smooth ColorOS 17 SpringOverScroller rubber-band vertical overscroll + edge haptic 307
-     * to the Settings RecyclerView.
+     * Attaches authentic ColorOS 17 SpringOverScroller RK4 cushioned vertical overscroll + edge haptic 307
+     * to Settings RecyclerViews, ListViews, ScrollViews, Tab Switcher, and NTP scroll containers.
+     * Matches overflow-coloros.mp4 (~500-580ms viscous cushioned rebound, smooth progressive drag resistance,
+     * 120Hz Choreographer-stepped via libtitanium_rive.so RK4 solver, 0% idle CPU when settled).
      */
     private static void attachCouiOverscroll(final ViewGroup rv) {
         if (rv == null || OVERSCROLL_TAG.equals(rv.getTag())) return;
@@ -3074,16 +3731,63 @@ public final class CouiBrowserUiEnhancer {
             private float lastY = 0f;
             private float overscrollY = 0f;
             private boolean isOverscrolling = false;
-            private ValueAnimator springBack;
+            private boolean springRunning = false;
+            private long lastFrameNanos = 0L;
+            private final float[] rk4State = new float[3]; // [pos, vel, tmpPos]
+
+            private final Choreographer.FrameCallback springCallback = new Choreographer.FrameCallback() {
+                @Override
+                public void doFrame(long frameTimeNanos) {
+                    if (!springRunning) return;
+                    if (!rv.isAttachedToWindow()) {
+                        springRunning = false;
+                        return;
+                    }
+                    float dt = (lastFrameNanos == 0L)
+                            ? 0.008f
+                            : Math.max(0.004f, Math.min(0.024f, (frameTimeNanos - lastFrameNanos) / 1_000_000_000f));
+                    lastFrameNanos = frameTimeNanos;
+                    boolean active = TitaniumRiveEngine.stepOverscrollRk4(rk4State, dt);
+                    overscrollY = rk4State[0];
+                    applyChildTranslationY(rv, overscrollY);
+                    if (active) {
+                        Choreographer.getInstance().postFrameCallback(this);
+                    } else {
+                        springRunning = false;
+                        overscrollY = 0f;
+                        applyChildTranslationY(rv, 0f);
+                    }
+                }
+            };
+
+            private void cancelSpring() {
+                if (springRunning) {
+                    springRunning = false;
+                    Choreographer.getInstance().removeFrameCallback(springCallback);
+                }
+            }
+
+            private void startSpringBack() {
+                cancelSpring();
+                if (Math.abs(overscrollY) <= 0.5f) {
+                    overscrollY = 0f;
+                    applyChildTranslationY(rv, 0f);
+                    return;
+                }
+                rk4State[0] = overscrollY;
+                rk4State[1] = 0f;
+                rk4State[2] = overscrollY;
+                lastFrameNanos = 0L;
+                springRunning = true;
+                Choreographer.getInstance().postFrameCallback(springCallback);
+            }
 
             @Override
             public boolean onTouch(View v, MotionEvent event) {
                 switch (event.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
                         lastY = event.getRawY();
-                        if (springBack != null && springBack.isRunning()) {
-                            springBack.cancel();
-                        }
+                        cancelSpring();
                         break;
                     case MotionEvent.ACTION_MOVE:
                         float curY = event.getRawY();
@@ -3091,15 +3795,21 @@ public final class CouiBrowserUiEnhancer {
                         lastY = curY;
                         boolean atTop = !rv.canScrollVertically(-1);
                         boolean atBottom = !rv.canScrollVertically(1);
-                        if ((atTop && dy > 0 && overscrollY >= 0) || (atBottom && dy < 0 && overscrollY <= 0) || isOverscrolling) {
+                        if ((atTop && dy > 0 && overscrollY >= 0)
+                                || (atBottom && dy < 0 && overscrollY <= 0)
+                                || isOverscrolling) {
                             if (!isOverscrolling && Math.abs(dy) > 1.5f) {
                                 isOverscrolling = true;
                                 performCouiHapticCode(rv, COUI_HAPTIC_OVERSCROLL);
                             }
-                            float damp = 1f / (1f + Math.abs(overscrollY) / dpF(rv.getContext(), 220f));
-                            overscrollY += dy * 0.42f * damp;
-                            // If user reversed back into normal scroll range
-                            if ((atTop && overscrollY < 0) || (atBottom && overscrollY > 0)) {
+                            // Exact ColorOS 17 progressive drag resistance: 0.40 * (1 - |offset| / screenH)
+                            float screenH = Math.max(dpF(rv.getContext(), 600f),
+                                    rv.getResources().getDisplayMetrics().heightPixels);
+                            float ratio = Math.min(Math.abs(overscrollY) / screenH, 0.92f);
+                            float factor = 0.40f * (1.0f - ratio);
+                            overscrollY += dy * factor;
+                            if ((atTop && !atBottom && overscrollY < 0f)
+                                    || (atBottom && !atTop && overscrollY > 0f)) {
                                 overscrollY = 0f;
                                 isOverscrolling = false;
                             }
@@ -3108,24 +3818,12 @@ public final class CouiBrowserUiEnhancer {
                         break;
                     case MotionEvent.ACTION_UP:
                     case MotionEvent.ACTION_CANCEL:
+                        isOverscrolling = false;
                         if (Math.abs(overscrollY) > 0.5f) {
-                            final float startO = overscrollY;
-                            isOverscrolling = false;
-                            springBack = ValueAnimator.ofFloat(startO, 0f);
-                            springBack.setDuration(300);
-                            springBack.setInterpolator(new DecelerateInterpolator(1.8f));
-                            springBack.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
-                                @Override
-                                public void onAnimationUpdate(ValueAnimator animation) {
-                                    overscrollY = (Float) animation.getAnimatedValue();
-                                    applyChildTranslationY(rv, overscrollY);
-                                    rv.invalidate();
-                                }
-                            });
-                            springBack.start();
+                            startSpringBack();
                         } else {
                             overscrollY = 0f;
-                            isOverscrolling = false;
+                            applyChildTranslationY(rv, 0f);
                         }
                         break;
                 }
@@ -3237,8 +3935,9 @@ public final class CouiBrowserUiEnhancer {
             rimPaint.setShader(rimGrad);
             canvas.drawCircle(cx, cy, r, rimPaint);
 
+            arrowPaint.setStyle(Paint.Style.FILL);
             arrowPaint.setColor(isDark ? 0xE6FFFFFF : 0xFF191919);
-            drawCouiBackArrow(canvas, cx, cy, dpF(getContext(), 20f), arrowPaint);
+            FluentIcons.drawCentered(canvas, FluentIcons.BACK, cx, cy, dpF(getContext(), 21f), arrowPaint);
         }
 
         @Override
@@ -3521,12 +4220,71 @@ public final class CouiBrowserUiEnhancer {
 
         private static final Method M_SET_EFFECT_LAYER;
         private static final Method M_SET_BLUR_RADIUS;
+        private static final Method M_SET_BLUR_RADIUS_PARAMS;
+        private static final Method M_SET_COLOR_TRANSFORM;
         private static final Method M_SET_CORNER_RADIUS;
         static final boolean HIDDEN_API_AVAILABLE;
+
+        // Vibrancy 3x3 saturation matrix (s = 1.36x) + luminous brightness lift (+0.11) for SurfaceFlinger
+        private static final float[] VIBRANT_LIGHT_MATRIX = buildSatMatrix3x3(1.36f);
+        private static final float[] VIBRANT_LIGHT_OFFSET = new float[]{0.11f, 0.11f, 0.11f};
+        private static final float[] VIBRANT_DARK_MATRIX = buildSatMatrix3x3(1.30f);
+        private static final float[] VIBRANT_DARK_OFFSET = new float[]{0.03f, 0.03f, 0.03f};
+        private static final float[] IDENTITY_MATRIX = new float[]{1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f};
+        private static final float[] ZERO_OFFSET = new float[]{0f, 0f, 0f};
+
+        private static float[] buildSatMatrix3x3(float s) {
+            float inv = 1.0f - s;
+            float r = 0.213f * inv;
+            float g = 0.715f * inv;
+            float b = 0.072f * inv;
+            // Column-major / row-major symmetric luminance matrix for SurfaceControl.setColorTransform
+            return new float[]{
+                r + s, r,     r,
+                g,     g + s, g,
+                b,     b,     b + s
+            };
+        }
+
+        /**
+         * Builds ColorOS 17's 18-float OplusBlurParam array matching com.oplus.graphics.OplusBlurParam:
+         * [0]=blurType(3=QUALITY_KAWASE), [1]=tileMode(2=MIRROR), [2]=zoomFactor(1.0),
+         * [3]=blendMode(5=GLOW_COLORDODGE light / 2=OVERLAY dark),
+         * [4..7]=blendColor(rgba), [8..11]=mixColor(rgba), [12..15]=blurColor(rgba),
+         * [16]=smoothCornerWeight(2.0), [17]=smoothCornerType(0).
+         */
+        private static float[] buildOplusBlurParam(boolean dark, boolean isFlyout) {
+            float[] p = new float[18];
+            p[0] = 3.0f; // BLUR_TYPE_QUALITY_KAWASE
+            p[1] = 2.0f; // BLUR_TILE_MODE_MIRROR
+            p[2] = 1.0f; // mZoomFactor
+            if (!dark) {
+                p[3] = isFlyout ? 4.0f : 5.0f; // GLOW_OVERLAY for flyout, GLOW_COLORDODGE for floating nav
+                // mBlendColor (RGBA)
+                p[4] = isFlyout ? 0.93f : 0.42f;
+                p[5] = isFlyout ? 0.94f : 0.43f;
+                p[6] = isFlyout ? 0.96f : 0.45f;
+                p[7] = isFlyout ? 0.56f : 0.48f;
+                // mMixColor (RGBA) — luminous crisp lift preserving underlying color saturation
+                p[8] = 0.96f;
+                p[9] = 0.97f;
+                p[10] = 0.99f;
+                p[11] = isFlyout ? 0.46f : 0.28f;
+            } else {
+                p[3] = 2.0f; // BLUR_BLEND_MODE_OVERLAY
+                p[4] = 0.26f; p[5] = 0.26f; p[6] = 0.28f; p[7] = 0.46f;
+                p[8] = 0.14f; p[9] = 0.14f; p[10] = 0.16f; p[11] = isFlyout ? 0.60f : 0.48f;
+            }
+            p[16] = 2.0f; // DEFAULT_SMOOTH_CORNER_WEIGHT
+            p[17] = 0.0f; // CORNER_TYPE
+            return p;
+        }
 
         static {
             Method mEffect = null;
             Method mBlur = null;
+            Method mBlurParams = null;
+            Method mColorTx = null;
             Method mCorner = null;
             try {
                 mEffect = SurfaceControl.Builder.class.getDeclaredMethod("setEffectLayer");
@@ -3542,6 +4300,16 @@ public final class CouiBrowserUiEnhancer {
                 Log.w(TAG, "SurfaceControl.Transaction.setBackgroundBlurRadius unavailable: " + t);
             }
             try {
+                mBlurParams = SurfaceControl.Transaction.class.getDeclaredMethod(
+                        "setBackgroundBlurRadius", SurfaceControl.class, int.class, float[].class);
+                mBlurParams.setAccessible(true);
+            } catch (Throwable ignored) {}
+            try {
+                mColorTx = SurfaceControl.Transaction.class.getDeclaredMethod(
+                        "setColorTransform", SurfaceControl.class, float[].class, float[].class);
+                mColorTx.setAccessible(true);
+            } catch (Throwable ignored) {}
+            try {
                 mCorner = SurfaceControl.Transaction.class.getDeclaredMethod(
                         "setCornerRadius", SurfaceControl.class, float.class);
                 mCorner.setAccessible(true);
@@ -3550,9 +4318,13 @@ public final class CouiBrowserUiEnhancer {
             }
             M_SET_EFFECT_LAYER = mEffect;
             M_SET_BLUR_RADIUS = mBlur;
+            M_SET_BLUR_RADIUS_PARAMS = mBlurParams;
+            M_SET_COLOR_TRANSFORM = mColorTx;
             M_SET_CORNER_RADIUS = mCorner;
             HIDDEN_API_AVAILABLE = (mEffect != null && mBlur != null && mCorner != null);
-            Log.i(TAG, "SurfaceViewBlurController hiddenApiAvailable=" + HIDDEN_API_AVAILABLE);
+            Log.i(TAG, "SurfaceViewBlurController hiddenApi=" + HIDDEN_API_AVAILABLE
+                    + " oplusBlurParam=" + (mBlurParams != null)
+                    + " colorTransform=" + (mColorTx != null));
         }
 
         private static final class SlotLayer {
@@ -3561,6 +4333,7 @@ public final class CouiBrowserUiEnhancer {
             final Rect crop = new Rect();
             float cornerRadius = -1f;
             int blurRadius = -1;
+            boolean darkApplied = false;
             boolean visible = false;
 
             SlotLayer(SurfaceControl parent, SurfaceControl child) {
@@ -3588,11 +4361,19 @@ public final class CouiBrowserUiEnhancer {
         private boolean hasActiveBlur = false;
         private boolean blurSuppressed = false;
         private boolean suppressDirty = false;
+        private boolean darkMode = false;
+        private boolean oplusParamsFailed = false;
+        private boolean colorTxFailed = false;
         private boolean loggedFirstActive = false;
 
         SurfaceViewBlurController(Activity activity, View hostView) {
             this.activity = activity;
             this.hostView = hostView;
+            this.darkMode = isDarkMode(activity);
+        }
+
+        void setDarkMode(boolean dark) {
+            this.darkMode = dark;
         }
 
         void setSlot(int slot, View view, float cornerDp, int blurDp) {
@@ -3867,16 +4648,41 @@ public final class CouiBrowserUiEnhancer {
 
                     if (!sl.visible || !tmpCrop.equals(sl.crop)
                             || Math.abs(scaledCorner - sl.cornerRadius) > 0.5f
-                            || blurPx != sl.blurRadius) {
+                            || blurPx != sl.blurRadius
+                            || sl.darkApplied != darkMode) {
                         if (tx == null) tx = new SurfaceControl.Transaction();
                         tx.setCrop(sl.child, tmpCrop);
                         tx.setLayer(sl.child, 2 + slot);
                         M_SET_CORNER_RADIUS.invoke(tx, sl.child, scaledCorner);
-                        M_SET_BLUR_RADIUS.invoke(tx, sl.child, blurPx);
+                        boolean appliedCustomized = false;
+                        if (M_SET_BLUR_RADIUS_PARAMS != null && !oplusParamsFailed && slot != SLOT_ADDRESS_BAR) {
+                            try {
+                                float[] bp = buildOplusBlurParam(darkMode, slot == SLOT_FLYOUT);
+                                M_SET_BLUR_RADIUS_PARAMS.invoke(tx, sl.child, blurPx, bp);
+                                appliedCustomized = true;
+                            } catch (Throwable t) {
+                                oplusParamsFailed = true;
+                                Log.w(TAG, "OplusBlurParam surface blur fallback", t);
+                            }
+                        }
+                        if (!appliedCustomized) {
+                            M_SET_BLUR_RADIUS.invoke(tx, sl.child, blurPx);
+                        }
+                        if (M_SET_COLOR_TRANSFORM != null && !colorTxFailed && slot != SLOT_ADDRESS_BAR) {
+                            try {
+                                M_SET_COLOR_TRANSFORM.invoke(tx, sl.child,
+                                        darkMode ? VIBRANT_DARK_MATRIX : VIBRANT_LIGHT_MATRIX,
+                                        darkMode ? VIBRANT_DARK_OFFSET : VIBRANT_LIGHT_OFFSET);
+                            } catch (Throwable t) {
+                                colorTxFailed = true;
+                                Log.w(TAG, "SurfaceControl.setColorTransform fallback", t);
+                            }
+                        }
                         tx.setVisibility(sl.child, true);
                         sl.crop.set(tmpCrop);
                         sl.cornerRadius = scaledCorner;
                         sl.blurRadius = blurPx;
+                        sl.darkApplied = darkMode;
                         sl.visible = true;
                     }
                     anyActive = true;
@@ -3982,25 +4788,103 @@ public final class CouiBrowserUiEnhancer {
             }
         };
 
-        // Round 13 + Round 14: Real 60-120fps RenderNode Gaussian backdrop blur over ID_TAB_SWITCHER_HOLDER
-        // driven strictly on entry / scroll / touch (zero infinite idle redraw loop!).
-        private static final float TAB_BLUR_SCALE = 0.5f;
-        private final RenderNode tabBackdropNode = (Build.VERSION.SDK_INT >= 31)
-                ? new RenderNode("coui-tab-switcher-blur") : null;
-        private final int[] tabHolderLoc = new int[2];
+        // Generalized 60-120fps Hardware RenderNode Vibrant Backdrop Blur over BOTH Tab Switcher
+        // (ID_TAB_SWITCHER_HOLDER) AND New Tab Page (NTP native view hierarchy) — fixes missing blur on NTP!
+        // Chained GPU saturation (1.40x) + luminance lift (+13%) ColorMatrix + 13dp Gaussian blur.
+        private static final float VIEW_BLUR_SCALE = 0.5f;
+        private final RenderNode viewBackdropNode = (Build.VERSION.SDK_INT >= 31)
+                ? new RenderNode("coui-view-backdrop-blur") : null;
+        private final int[] backdropSourceLoc = new int[2];
         private final int[] pieceLoc = new int[2];
         private final Path pieceClipPath = new Path();
         private boolean inTabSwitcher = false;
-        private boolean isRecordingTabBackdrop = false;
-        private boolean tabBackdropValid = false;
-        private boolean tabBackdropDirty = true;
-        private long lastTabBackdropMs = 0L;
-        private int lastTabScrollHash = 0;
-        private int lastTabBlurW = -1;
-        private int lastTabBlurH = -1;
+        private boolean inNtp = false;
+        private View activeBackdropSource = null;
+        private boolean isRecordingViewBackdrop = false;
+        private boolean viewBackdropValid = false;
+        private boolean viewBackdropDirty = true;
+        private long lastViewBackdropMs = 0L;
+        private int lastViewScrollHash = 0;
+        private int lastViewBlurW = -1;
+        private int lastViewBlurH = -1;
+        private boolean lastViewBlurDark = false;
+
+        boolean isInViewBackdropMode() {
+            return inTabSwitcher || inNtp;
+        }
 
         boolean isInTabSwitcher() {
             return inTabSwitcher;
+        }
+
+        /** Finds the full-screen NTP native page container (sibling of navBar, never ancestor). */
+        private View findActiveNtpContainer(View decor) {
+            if (decor == null) return null;
+            View ntp = decor.findViewById(ID_NTP_CONTENT);
+            if (ntp == null || !ntp.isShown() || ntp.getWidth() <= 0 || ntp.getHeight() <= 0) {
+                return null;
+            }
+            // Walk up to the highest ViewGroup wrapping ntp_scrollview / feed_stream_recycler_view
+            // inside the browser content frame WITHOUT crossing into android.R.id.content (which holds navBar).
+            View best = ntp;
+            View scroll = decor.findViewById(ID_NTP_SCROLLVIEW);
+            if (scroll != null && scroll.isShown() && scroll.getHeight() >= ntp.getHeight()) {
+                best = scroll;
+            }
+            View feed = decor.findViewById(ID_FEED_STREAM_RV);
+            if (feed != null && feed.isShown() && feed.getHeight() >= best.getHeight()) {
+                best = feed;
+            }
+            View cur = best;
+            for (int depth = 0; depth < 6; depth++) {
+                ViewParent p = cur.getParent();
+                if (!(p instanceof View)) break;
+                View pv = (View) p;
+                int pid = pv.getId();
+                if (pid == android.R.id.content || pid == ID_EDGE_TO_EDGE_BASE || pv == decor) {
+                    break;
+                }
+                if (isAncestorOf(pv, this)) {
+                    break;
+                }
+                if (pv.getWidth() >= best.getWidth() && pv.getHeight() >= best.getHeight()) {
+                    best = pv;
+                }
+                cur = pv;
+            }
+            return best;
+        }
+
+        private static boolean isAncestorOf(View candidate, View target) {
+            ViewParent p = target != null ? target.getParent() : null;
+            while (p != null) {
+                if (p == candidate) return true;
+                p = p.getParent();
+            }
+            return false;
+        }
+
+        private static ColorMatrixColorFilter createVibrancyColorFilter(boolean dark) {
+            // Kyant0/AndroidLiquidGlass ColorControls matrix: saturation=1.40x, luminance lift=+0.13 (light) / +0.04 (dark)
+            float sat = dark ? 1.32f : 1.42f;
+            float contrast = dark ? 1.04f : 1.03f;
+            float brightness = dark ? 0.04f : 0.13f;
+            float invSat = 1.0f - sat;
+            float r = 0.213f * invSat;
+            float g = 0.715f * invSat;
+            float b = 0.072f * invSat;
+            float t = (0.5f - contrast * 0.5f + brightness) * 255f;
+            float cr = contrast * r;
+            float cg = contrast * g;
+            float cb = contrast * b;
+            float cs = contrast * sat;
+            ColorMatrix cm = new ColorMatrix(new float[]{
+                cr + cs, cg,      cb,      0f, t,
+                cr,      cg + cs, cb,      0f, t,
+                cr,      cg,      cb + cs, 0f, t,
+                0f,      0f,      0f,      1f, 0f
+            });
+            return new ColorMatrixColorFilter(cm);
         }
 
         private static boolean isVideoMediaUrl(String raw) {
@@ -4031,24 +4915,39 @@ public final class CouiBrowserUiEnhancer {
             return false;
         }
 
-        private int computeTabSwitcherScrollHash(View tabHolder) {
-            if (tabHolder == null) return 0;
-            int h = tabHolder.getWidth() * 31 + tabHolder.getHeight();
-            View tabRv = tabHolder.findViewById(ID_TAB_LIST_RECYCLER_VIEW);
-            if (tabRv instanceof ViewGroup) {
-                ViewGroup rvg = (ViewGroup) tabRv;
-                int n = rvg.getChildCount();
-                h = h * 31 + n;
-                if (n > 0) {
-                    View c0 = rvg.getChildAt(0);
-                    if (c0 != null) {
-                        h = h * 31 + c0.getTop();
-                        h = h * 31 + Math.round(c0.getTranslationY());
+        private int computeViewBackdropScrollHash(View source) {
+            if (source == null) return 0;
+            int h = source.getWidth() * 31 + source.getHeight();
+            h = h * 31 + source.getScrollY();
+            if (inTabSwitcher) {
+                View tabRv = source.findViewById(ID_TAB_LIST_RECYCLER_VIEW);
+                if (tabRv instanceof ViewGroup) {
+                    ViewGroup rvg = (ViewGroup) tabRv;
+                    int n = rvg.getChildCount();
+                    h = h * 31 + n;
+                    if (n > 0) {
+                        View c0 = rvg.getChildAt(0);
+                        if (c0 != null) {
+                            h = h * 31 + c0.getTop();
+                            h = h * 31 + Math.round(c0.getTranslationY());
+                        }
+                        View cLast = rvg.getChildAt(n - 1);
+                        if (cLast != null) {
+                            h = h * 31 + cLast.getBottom();
+                        }
                     }
-                    View cLast = rvg.getChildAt(n - 1);
-                    if (cLast != null) {
-                        h = h * 31 + cLast.getBottom();
-                    }
+                }
+            } else if (inNtp) {
+                View ntpContent = source.findViewById(ID_NTP_CONTENT);
+                if (ntpContent != null) {
+                    h = h * 31 + ntpContent.getTop();
+                    h = h * 31 + ntpContent.getScrollY();
+                    h = h * 31 + Math.round(ntpContent.getTranslationY());
+                }
+                View mv = source.findViewById(ID_NTP_MV_TILES_CONTAINER);
+                if (mv != null) {
+                    h = h * 31 + mv.getTop();
+                    h = h * 31 + mv.getHeight();
                 }
             }
             return h;
@@ -4070,62 +4969,72 @@ public final class CouiBrowserUiEnhancer {
         @Override
         public boolean dispatchTouchEvent(MotionEvent ev) {
             lastUserInteractionMs = SystemClock.uptimeMillis();
-            if (inTabSwitcher) {
-                tabBackdropDirty = true;
+            if (isInViewBackdropMode()) {
+                viewBackdropDirty = true;
             }
             return super.dispatchTouchEvent(ev);
         }
 
-        private void recordTabSwitcherBackdrop(View tabHolder) {
-            if (Build.VERSION.SDK_INT < 31 || tabBackdropNode == null || isRecordingTabBackdrop || tabHolder == null) {
+        void markViewBackdropDirty() {
+            viewBackdropDirty = true;
+        }
+
+        void setMenuMorphProgress(float morph) {
+            rightCircleView.setMenuMorphProgress(morph);
+        }
+
+        private void recordViewBackdrop(View source) {
+            if (Build.VERSION.SDK_INT < 31 || viewBackdropNode == null || isRecordingViewBackdrop || source == null) {
                 return;
             }
-            int w = tabHolder.getWidth();
-            int h = tabHolder.getHeight();
+            int w = source.getWidth();
+            int h = source.getHeight();
             if (w <= 0 || h <= 0) {
-                tabBackdropValid = false;
+                viewBackdropValid = false;
                 return;
             }
-            int rw = Math.max(1, Math.round(w * TAB_BLUR_SCALE));
-            int rh = Math.max(1, Math.round(h * TAB_BLUR_SCALE));
-            isRecordingTabBackdrop = true;
+            int rw = Math.max(1, Math.round(w * VIEW_BLUR_SCALE));
+            int rh = Math.max(1, Math.round(h * VIEW_BLUR_SCALE));
+            isRecordingViewBackdrop = true;
             try {
-                tabHolder.getLocationInWindow(tabHolderLoc);
-                tabBackdropNode.setPosition(0, 0, rw, rh);
-                Canvas rec = tabBackdropNode.beginRecording(rw, rh);
+                source.getLocationInWindow(backdropSourceLoc);
+                viewBackdropNode.setPosition(0, 0, rw, rh);
+                Canvas rec = viewBackdropNode.beginRecording(rw, rh);
                 try {
                     rec.drawColor(isDark ? 0xFF000000 : 0xFFF0F1F3);
-                    rec.scale(TAB_BLUR_SCALE, TAB_BLUR_SCALE);
-                    tabHolder.draw(rec);
+                    rec.scale(VIEW_BLUR_SCALE, VIEW_BLUR_SCALE);
+                    source.draw(rec);
                 } finally {
-                    tabBackdropNode.endRecording();
+                    viewBackdropNode.endRecording();
                 }
-                if (rw != lastTabBlurW || rh != lastTabBlurH) {
-                    float blurPx = dpF(activity, 13f) * TAB_BLUR_SCALE;
-                    tabBackdropNode.setRenderEffect(
-                            RenderEffect.createBlurEffect(blurPx, blurPx, Shader.TileMode.CLAMP));
-                    lastTabBlurW = rw;
-                    lastTabBlurH = rh;
+                if (rw != lastViewBlurW || rh != lastViewBlurH || isDark != lastViewBlurDark) {
+                    float blurPx = dpF(activity, 13f) * VIEW_BLUR_SCALE;
+                    RenderEffect blur = RenderEffect.createBlurEffect(blurPx, blurPx, Shader.TileMode.CLAMP);
+                    RenderEffect vibrant = RenderEffect.createColorFilterEffect(createVibrancyColorFilter(isDark), blur);
+                    viewBackdropNode.setRenderEffect(vibrant);
+                    lastViewBlurW = rw;
+                    lastViewBlurH = rh;
+                    lastViewBlurDark = isDark;
                 }
-                tabBackdropValid = true;
-                tabBackdropDirty = false;
-                lastTabBackdropMs = SystemClock.uptimeMillis();
+                viewBackdropValid = true;
+                viewBackdropDirty = false;
+                lastViewBackdropMs = SystemClock.uptimeMillis();
                 leftCircleView.invalidate();
                 centerPillView.invalidate();
                 rightCircleView.invalidate();
-                if (flyoutOverlay != null && flyoutOverlay.isOpen()) {
+                if (flyoutOverlay != null && (flyoutOverlay.isOpen() || flyoutOverlay.isAnimating())) {
                     flyoutOverlay.invalidateCard();
                 }
             } catch (Throwable t) {
-                tabBackdropValid = false;
+                viewBackdropValid = false;
             } finally {
-                isRecordingTabBackdrop = false;
+                isRecordingViewBackdrop = false;
             }
         }
 
-        boolean drawTabSwitcherBackdropBlur(Canvas canvas, View pieceView, RectF clipRect, float radiusPx) {
-            if (!inTabSwitcher || !tabBackdropValid || Build.VERSION.SDK_INT < 31
-                    || tabBackdropNode == null || !tabBackdropNode.hasDisplayList()
+        boolean drawViewBackdropBlur(Canvas canvas, View pieceView, RectF clipRect, float radiusPx) {
+            if (!isInViewBackdropMode() || !viewBackdropValid || Build.VERSION.SDK_INT < 31
+                    || viewBackdropNode == null || !viewBackdropNode.hasDisplayList()
                     || !canvas.isHardwareAccelerated() || pieceView == null) {
                 return false;
             }
@@ -4138,30 +5047,265 @@ public final class CouiBrowserUiEnhancer {
             pieceClipPath.addRoundRect(clipRect, radiusPx, radiusPx, Path.Direction.CW);
             canvas.clipPath(pieceClipPath);
             canvas.scale(1f / sx, 1f / sy);
-            canvas.translate(tabHolderLoc[0] - pieceLoc[0], tabHolderLoc[1] - pieceLoc[1]);
-            canvas.scale(1f / TAB_BLUR_SCALE, 1f / TAB_BLUR_SCALE);
-            canvas.drawRenderNode(tabBackdropNode);
+            canvas.translate(backdropSourceLoc[0] - pieceLoc[0], backdropSourceLoc[1] - pieceLoc[1]);
+            canvas.scale(1f / VIEW_BLUR_SCALE, 1f / VIEW_BLUR_SCALE);
+            canvas.drawRenderNode(viewBackdropNode);
             canvas.restoreToCount(save);
             return true;
         }
 
-        // Round 12: Echo-Music directional auto-hide state machine (50dp hysteresis, spring stiffness=500 damping=0.9)
+        // Synchronized Scroll Auto-Hide (Top Address Bar + Bottom Floating Navigation Pill):
+        // - Dual-signal: Window.Callback touch vertical drag + Chromium BrowserControlsManager offset
+        // - Lower cumulative downward scroll trigger threshold (~26dp) so moderate reading scrolls reliably hide BOTH bars
+        // - Upward micro-jitter hysteresis deadzone (~12dp) so lifting a thumb NEVER cancels hiding
+        // - Immune to Chromium's post-finger-up snap-back animation bouncing rawTopOffsetPx back to 0!
+        private static final float HIDE_SCROLL_THRESHOLD_DP = 26f;
+        private static final float UP_JITTER_DEADZONE_DP = 12f;
+        private static final float REVEAL_SCROLL_THRESHOLD_DP = 28f;
+
         private boolean barsHiddenByScroll = false;
         private int lastRawControlsOffset = 0;
-        private float accumulatedScrollPx = 0f;
+        private float controlsAccumDownPx = 0f;
+        private float controlsAccumUpPx = 0f;
         private float currentTopTransY = 0f;
         private float currentBotTransY = 0f;
         private ValueAnimator barsAutoHideAnim;
 
-        /** Exact underdamped spring curve matching Compose spring(dampingRatio = 0.9f, stiffness = 500f). */
+        // Raw touch gesture tracking (via CouiScrollTouchCallback)
+        private boolean touchIgnoreGesture = false;
+        private boolean isFingerDown = false;
+        private boolean touchLockedVertical = false;
+        private float touchStartX = 0f;
+        private float touchStartY = 0f;
+        private float touchLastY = 0f;
+        private float touchAccumDownPx = 0f;
+        private float touchAccumUpPx = 0f;
+        private int lastScrollDir = 0; // -1 = down (reading), +1 = up (toward top)
+        private long lastHideTriggerMs = 0L;
+        private long lastTouchUpMs = 0L;
+        private float webAccumDownPx = 0f;
+        private float webAccumUpPx = 0f;
+        private boolean webFingerDown = false;
+        private int lastEffYAtWebUpdate = Integer.MIN_VALUE;
+        private final int[] hitLoc = new int[2];
+
+        void onWebPageTouchState(boolean down) {
+            long now = SystemClock.uptimeMillis();
+            webFingerDown = down;
+            if (down) {
+                lastUserInteractionMs = now;
+                webAccumDownPx = 0f;
+                webAccumUpPx = 0f;
+            } else {
+                lastTouchUpMs = now;
+                webAccumDownPx = 0f;
+                webAccumUpPx = 0f;
+            }
+        }
+
+        void onWebPageScrollBegin(boolean isDirectionUp) {
+            long now = SystemClock.uptimeMillis();
+            lastUserInteractionMs = now;
+            webAccumDownPx = 0f;
+            webAccumUpPx = 0f;
+        }
+
+        /**
+         * Primary Viz/Blink webpage scroll signal (physical px), compensated for Chromium's top-controls
+         * viewport expansion via effectiveScrollY = newScrollYPx - lastRawControlsOffset:
+         * - effDelta > 0 => scrolling DOWN into content -> hide BOTH bars at >= 26dp.
+         * - effDelta < 0 => scrolling UP toward top -> absorb <= 12dp thumb-lift micro-jitter, reveal at >= 28dp.
+         */
+        void onWebPageScrollChanged(int newScrollYPx, int oldScrollYPx) {
+            int effY = newScrollYPx - lastRawControlsOffset;
+            int effDelta;
+            if (lastEffYAtWebUpdate == Integer.MIN_VALUE) {
+                effDelta = newScrollYPx - oldScrollYPx;
+            } else {
+                effDelta = effY - lastEffYAtWebUpdate;
+            }
+            lastEffYAtWebUpdate = effY;
+            if (effDelta == 0) return;
+
+            // Ignore huge instantaneous jumps (e.g. tab switch, anchor jump, page reload reset)
+            if (Math.abs(effDelta) > dp(activity, 500)) {
+                webAccumDownPx = 0f;
+                webAccumUpPx = 0f;
+                if (newScrollYPx <= 4 && lastRawControlsOffset >= -4) {
+                    lastScrollDir = 1;
+                    setBarsHiddenByScroll(false, "web-reset-top");
+                }
+                return;
+            }
+
+            long now = SystemClock.uptimeMillis();
+            lastUserInteractionMs = now;
+            Window w = activity.getWindow();
+            View decor = (w != null) ? w.getDecorView() : null;
+            if (shouldForceShowBars(decor)) {
+                webAccumDownPx = 0f;
+                webAccumUpPx = 0f;
+                setBarsHiddenByScroll(false, "web-forceShow");
+                return;
+            }
+
+            float hideThresh = dpF(activity, HIDE_SCROLL_THRESHOLD_DP);
+            float deadzone = dpF(activity, UP_JITTER_DEADZONE_DP);
+            float revealThresh = dpF(activity, REVEAL_SCROLL_THRESHOLD_DP);
+
+            if (effDelta > 0) {
+                // Scrolling DOWN into webpage content
+                webAccumDownPx += effDelta;
+                if (webAccumDownPx > dpF(activity, 6f)) {
+                    webAccumUpPx = 0f;
+                }
+                if (webAccumDownPx >= hideThresh) {
+                    lastScrollDir = -1;
+                    lastHideTriggerMs = now;
+                    webAccumDownPx = 0f;
+                    webAccumUpPx = 0f;
+                    setBarsHiddenByScroll(true, "web-down(effY=" + effY + ")");
+                }
+            } else {
+                // Scrolling UP toward top of page: enforce 12dp micro-jitter hysteresis deadzone
+                int upDelta = -effDelta;
+                webAccumUpPx += upDelta;
+                if (webAccumUpPx > deadzone) {
+                    webAccumDownPx = 0f;
+                }
+                if (barsHiddenByScroll && (webAccumUpPx >= revealThresh || (newScrollYPx <= 4 && webAccumUpPx >= deadzone))) {
+                    lastScrollDir = 1;
+                    webAccumUpPx = 0f;
+                    webAccumDownPx = 0f;
+                    setBarsHiddenByScroll(false, "web-up(effY=" + effY + ")");
+                }
+            }
+        }
+
+        private boolean isPointInsideView(View v, float rawX, float rawY) {
+            if (v == null || !v.isShown() || v.getWidth() <= 0 || v.getHeight() <= 0) return false;
+            v.getLocationOnScreen(hitLoc);
+            return rawX >= hitLoc[0] && rawX <= hitLoc[0] + v.getWidth()
+                    && rawY >= hitLoc[1] && rawY <= hitLoc[1] + v.getHeight();
+        }
+
+        void onWindowTouchEvent(MotionEvent ev) {
+            if (ev == null) return;
+            long now = SystemClock.uptimeMillis();
+            int action = ev.getActionMasked();
+            float rx = ev.getRawX();
+            float ry = ev.getRawY();
+            if (isInViewBackdropMode()) {
+                viewBackdropDirty = true;
+            }
+            if (action == MotionEvent.ACTION_DOWN) {
+                lastUserInteractionMs = now;
+                isFingerDown = true;
+                touchLockedVertical = false;
+                touchStartX = rx;
+                touchStartY = ry;
+                touchLastY = ry;
+                touchAccumDownPx = 0f;
+                touchAccumUpPx = 0f;
+                Window w = activity.getWindow();
+                View decor = (w != null) ? w.getDecorView() : null;
+                boolean onChromeUi = isPointInsideView(this, rx, ry)
+                        || (flyoutOverlay != null && flyoutOverlay.isOpen())
+                        || isPointInsideView(cachedControlContainer, rx, ry)
+                        || shouldForceShowBars(decor);
+                touchIgnoreGesture = onChromeUi;
+                return;
+            }
+            if (action == MotionEvent.ACTION_POINTER_DOWN) {
+                // Multi-touch (pinch-to-zoom) should not toggle bars
+                touchIgnoreGesture = true;
+                return;
+            }
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                float netDy = ry - touchStartY;
+                if (Math.abs(netDy) > dpF(activity, 12f)) {
+                    Log.i(TAG, "touchSwipe netDy=" + Math.round(netDy) + " ign=" + touchIgnoreGesture
+                            + " locked=" + touchLockedVertical + " hidden=" + barsHiddenByScroll
+                            + " rawTop=" + lastRawControlsOffset);
+                }
+                isFingerDown = false;
+                lastTouchUpMs = now;
+                touchLockedVertical = false;
+                touchAccumDownPx = 0f;
+                touchAccumUpPx = 0f;
+                return;
+            }
+            if (action != MotionEvent.ACTION_MOVE || touchIgnoreGesture) return;
+
+            float dy = ry - touchLastY;
+            touchLastY = ry;
+            float totalDx = Math.abs(rx - touchStartX);
+            float totalDy = Math.abs(ry - touchStartY);
+            if (!touchLockedVertical) {
+                float slop = dpF(activity, 7f);
+                if (totalDx > slop && totalDx > totalDy * 1.15f) {
+                    touchIgnoreGesture = true;
+                    return;
+                }
+                if (totalDy > slop && totalDy >= totalDx) {
+                    touchLockedVertical = true;
+                    // Include the initial slop movement so moderate scrolls trigger promptly
+                    dy = ry - touchStartY;
+                } else {
+                    return;
+                }
+            }
+
+            Window w = activity.getWindow();
+            View decor = (w != null) ? w.getDecorView() : null;
+            if (shouldForceShowBars(decor)) {
+                touchAccumDownPx = 0f;
+                touchAccumUpPx = 0f;
+                setBarsHiddenByScroll(false, "touch-forceShow");
+                return;
+            }
+
+            float hideThresh = dpF(activity, HIDE_SCROLL_THRESHOLD_DP);
+            float deadzone = dpF(activity, UP_JITTER_DEADZONE_DP);
+            float revealThresh = dpF(activity, REVEAL_SCROLL_THRESHOLD_DP);
+
+            if (dy < 0f) {
+                // Finger swiping UP = webpage scrolling DOWN
+                touchAccumDownPx += (-dy);
+                if (touchAccumDownPx > dpF(activity, 6f)) {
+                    touchAccumUpPx = 0f;
+                }
+                if (touchAccumDownPx >= hideThresh) {
+                    lastScrollDir = -1;
+                    lastHideTriggerMs = now;
+                    touchAccumDownPx = 0f;
+                    touchAccumUpPx = 0f;
+                    setBarsHiddenByScroll(true, "touch-down");
+                }
+            } else if (dy > 0f) {
+                // Finger swiping DOWN = webpage scrolling UP (absorb <=12dp upward thumb-lift jitter!)
+                touchAccumUpPx += dy;
+                if (touchAccumUpPx > deadzone) {
+                    touchAccumDownPx = 0f;
+                }
+                if (barsHiddenByScroll && touchAccumUpPx >= revealThresh) {
+                    lastScrollDir = 1;
+                    touchAccumUpPx = 0f;
+                    touchAccumDownPx = 0f;
+                    setBarsHiddenByScroll(false, "touch-up");
+                }
+            }
+        }
+
+        /** Exact underdamped spring curve matching Compose spring(dampingRatio = 0.88f, stiffness = 460f). */
         private static final Interpolator ECHO_SPRING_INTERPOLATOR = new Interpolator() {
             @Override
             public float getInterpolation(float input) {
                 if (input <= 0f) return 0f;
                 if (input >= 1f) return 1f;
-                double t = input * 0.34; // 340ms horizon where exp(-0.9 * sqrt(500) * 0.34) < 0.001
-                double wn = Math.sqrt(500.0);
-                double zeta = 0.9;
+                double t = input * 0.35;
+                double wn = Math.sqrt(460.0);
+                double zeta = 0.88;
                 double wd = wn * Math.sqrt(1.0 - zeta * zeta);
                 double env = Math.exp(-zeta * wn * t);
                 double val = 1.0 - env * (Math.cos(wd * t) + (zeta / Math.sqrt(1.0 - zeta * zeta)) * Math.sin(wd * t));
@@ -4189,27 +5333,18 @@ public final class CouiBrowserUiEnhancer {
         /** Called on every Chromium BrowserControlsManager.notifyControlOffsetChanged() scroll frame. */
         void onChromiumControlsOffset(View controlContainer, int rawTopOffsetPx) {
             cachedControlContainer = controlContainer;
+            long now = SystemClock.uptimeMillis();
             if (rawTopOffsetPx != lastRawControlsOffset) {
-                lastUserInteractionMs = SystemClock.uptimeMillis();
+                lastUserInteractionMs = now;
             }
             Window w = activity.getWindow();
             View decor = (w != null) ? w.getDecorView() : null;
 
             if (shouldForceShowBars(decor)) {
-                accumulatedScrollPx = 0f;
+                controlsAccumDownPx = 0f;
+                controlsAccumUpPx = 0f;
                 lastRawControlsOffset = rawTopOffsetPx;
-                setBarsHiddenByScroll(false);
-                if (Math.abs(controlContainer.getTranslationY() - currentTopTransY) > 0.5f) {
-                    controlContainer.setTranslationY(currentTopTransY);
-                }
-                return;
-            }
-
-            // Always show immediately when scrolled back to the top of the page
-            if (rawTopOffsetPx >= -2) {
-                accumulatedScrollPx = 0f;
-                lastRawControlsOffset = rawTopOffsetPx;
-                setBarsHiddenByScroll(false);
+                setBarsHiddenByScroll(false, "controls-forceShow");
                 if (Math.abs(controlContainer.getTranslationY() - currentTopTransY) > 0.5f) {
                     controlContainer.setTranslationY(currentTopTransY);
                 }
@@ -4219,56 +5354,93 @@ public final class CouiBrowserUiEnhancer {
             int delta = rawTopOffsetPx - lastRawControlsOffset;
             lastRawControlsOffset = rawTopOffsetPx;
 
-            // Echo-Music directional 50dp hysteresis (clamped to 42% of header height so it always triggers cleanly
-            // within Chromium's topControlsHeight scroll range, resetting immediately on direction change).
+            // If the user's most recent scroll gesture was DOWNWARD (lastScrollDir < 0) and their finger is
+            // NOT actively scrolling up, ANY positive delta (or bounce back to rawTopOffsetPx == 0)
+            // from Chromium's BrowserControlsManager is a synthetic compositor snap-back and MUST NOT cancel hiding!
+            boolean activeFinger = isFingerDown || webFingerDown;
+            boolean syntheticSnapBack = barsHiddenByScroll
+                    && lastScrollDir < 0
+                    && !activeFinger;
+
+            // Only auto-reveal at scroll-top (rawTopOffsetPx >= -2) when NOT a synthetic post-downward snap-back
+            if (rawTopOffsetPx >= -2) {
+                controlsAccumDownPx = 0f;
+                controlsAccumUpPx = 0f;
+                if (!syntheticSnapBack && lastScrollDir >= 0) {
+                    setBarsHiddenByScroll(false, "controls-top");
+                }
+                if (Math.abs(controlContainer.getTranslationY() - currentTopTransY) > 0.5f) {
+                    controlContainer.setTranslationY(currentTopTransY);
+                }
+                return;
+            }
+
+            float hideThresh = dpF(activity, HIDE_SCROLL_THRESHOLD_DP);
+            float deadzone = dpF(activity, UP_JITTER_DEADZONE_DP);
+            float revealThresh = dpF(activity, REVEAL_SCROLL_THRESHOLD_DP);
             int headerH = controlContainer.getHeight();
-            float threshold = Math.min(dpF(activity, 50f),
-                    Math.max(dpF(activity, 24f), headerH > 0 ? headerH * 0.42f : dpF(activity, 40f)));
 
             if (delta < 0) {
-                if (accumulatedScrollPx > 0f) accumulatedScrollPx = 0f;
-                accumulatedScrollPx += delta; // negative = scrolling down
-                if (!barsHiddenByScroll && (accumulatedScrollPx <= -threshold
-                        || (headerH > 0 && rawTopOffsetPx <= -(headerH - dp(activity, 8))))) {
-                    accumulatedScrollPx = 0f;
-                    setBarsHiddenByScroll(true);
+                // Scrolling down
+                controlsAccumDownPx += (-delta);
+                if (controlsAccumDownPx > dpF(activity, 6f)) {
+                    controlsAccumUpPx = 0f;
                 }
-            } else if (delta > 0) {
-                if (accumulatedScrollPx < 0f) accumulatedScrollPx = 0f;
-                accumulatedScrollPx += delta; // positive = scrolling up
-                if (barsHiddenByScroll && (accumulatedScrollPx >= threshold || rawTopOffsetPx >= -dp(activity, 12))) {
-                    accumulatedScrollPx = 0f;
-                    setBarsHiddenByScroll(false);
+                if (!barsHiddenByScroll && (controlsAccumDownPx >= hideThresh
+                        || (headerH > 0 && rawTopOffsetPx <= -(headerH - dp(activity, 12))))) {
+                    controlsAccumDownPx = 0f;
+                    controlsAccumUpPx = 0f;
+                    lastScrollDir = -1;
+                    lastHideTriggerMs = now;
+                    setBarsHiddenByScroll(true, "controls-down");
+                }
+            } else if (delta > 0 && !syntheticSnapBack && (activeFinger || lastScrollDir > 0)) {
+                // Scrolling up: enforce 12dp micro-jitter deadzone so finger lift never cancels hide
+                controlsAccumUpPx += delta;
+                if (controlsAccumUpPx > deadzone) {
+                    controlsAccumDownPx = 0f;
+                }
+                if (barsHiddenByScroll && controlsAccumUpPx >= revealThresh) {
+                    controlsAccumUpPx = 0f;
+                    controlsAccumDownPx = 0f;
+                    lastScrollDir = 1;
+                    setBarsHiddenByScroll(false, "controls-up");
                 }
             }
 
-            // Keep control_container locked strictly to our smooth animated offset (zero half-offset status-bar collision!)
             if (Math.abs(controlContainer.getTranslationY() - currentTopTransY) > 0.5f) {
                 controlContainer.setTranslationY(currentTopTransY);
             }
         }
 
         void setBarsHiddenByScroll(boolean hide) {
+            setBarsHiddenByScroll(hide, "direct");
+        }
+
+        void setBarsHiddenByScroll(boolean hide, String reason) {
             if (this.barsHiddenByScroll == hide) return;
             this.barsHiddenByScroll = hide;
+            Log.i(TAG, "autoHide -> " + hide + " (" + reason + ") rawTop=" + lastRawControlsOffset);
             if (hide && flyoutOverlay != null && flyoutOverlay.isOpen()) {
                 flyoutOverlay.dismiss();
             }
             final View cc = cachedControlContainer;
+            if (!hide && cc != null && cc.getVisibility() == View.INVISIBLE) {
+                cc.setVisibility(View.VISIBLE);
+            }
             int headerH = (cc != null && cc.getHeight() > 0) ? cc.getHeight() : dp(activity, 108);
             int navH = (getHeight() > 0) ? getHeight() : (dp(activity, 58 + 10) + currentBottomPadPx);
 
             final float startTop = currentTopTransY;
             final float endTop = hide ? -(headerH + dpF(activity, 12f)) : 0f;
             final float startBot = currentBotTransY;
-            // Exact Echo-Music slide distance: barHeight + bottomInset + 8.dp (+ shadow clearance)
             final float endBot = hide ? (navH + dpF(activity, 16f)) : 0f;
 
             if (barsAutoHideAnim != null && barsAutoHideAnim.isRunning()) {
                 barsAutoHideAnim.cancel();
             }
             barsAutoHideAnim = ValueAnimator.ofFloat(0f, 1f);
-            barsAutoHideAnim.setDuration(hide ? 280L : 340L);
+            barsAutoHideAnim.setDuration(hide ? 260L : 340L);
             barsAutoHideAnim.setInterpolator(hide ? new DecelerateInterpolator(1.6f) : ECHO_SPRING_INTERPOLATOR);
             barsAutoHideAnim.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
                 @Override
@@ -4318,11 +5490,11 @@ public final class CouiBrowserUiEnhancer {
                         stateChanged = true;
                         if (inTabSwitcher) {
                             selectedCenterIndex = 2; // Tabs active
-                            tabBackdropDirty = true;
-                            lastTabScrollHash = 0;
+                            viewBackdropDirty = true;
+                            lastViewScrollHash = 0;
                         } else {
-                            tabBackdropValid = false;
-                            tabBackdropDirty = false;
+                            viewBackdropValid = false;
+                            viewBackdropDirty = true;
                             if (selectedCenterIndex == 2) selectedCenterIndex = 1; // Return to Home
                         }
                         leftCircleView.invalidate();
@@ -4330,6 +5502,22 @@ public final class CouiBrowserUiEnhancer {
                         rightCircleView.invalidate();
                         if (flyoutOverlay != null) flyoutOverlay.invalidateCard();
                     }
+
+                    // Detect New Tab Page (NTP) so BOTH bottom nav bar & flyout menu get real vibrant frosted glass blur on NTP!
+                    View ntpContainer = !inTabSwitcher ? findActiveNtpContainer(decor) : null;
+                    boolean nowInNtp = (ntpContainer != null);
+                    if (nowInNtp != inNtp) {
+                        inNtp = nowInNtp;
+                        stateChanged = true;
+                        viewBackdropValid = false;
+                        viewBackdropDirty = true;
+                        lastViewScrollHash = 0;
+                        leftCircleView.invalidate();
+                        centerPillView.invalidate();
+                        rightCircleView.invalidate();
+                        if (flyoutOverlay != null) flyoutOverlay.invalidateCard();
+                    }
+                    activeBackdropSource = inTabSwitcher ? tabHolder : (inNtp ? ntpContainer : null);
 
                     boolean isFullscreen = false;
                     if (Build.VERSION.SDK_INT >= 30) {
@@ -4361,20 +5549,21 @@ public final class CouiBrowserUiEnhancer {
                         }
                     }
 
-                    boolean flyoutOpen = (flyoutOverlay != null && flyoutOverlay.isOpen());
+                    boolean flyoutOpen = (flyoutOverlay != null && (flyoutOverlay.isOpen() || flyoutOverlay.isAnimating()));
                     if (flyoutOpen != lastFlyoutOpen) {
                         lastFlyoutOpen = flyoutOpen;
-                        if (flyoutOpen) lastUserInteractionMs = now;
+                        if (flyoutOpen) {
+                            lastUserInteractionMs = now;
+                            if (isInViewBackdropMode()) viewBackdropDirty = true;
+                        }
                         stateChanged = true;
                     }
 
-                    // Throttled media-activity check (350ms): detects BOTH direct video URLs and embedded
-                    // HTML5 <video> (including muted clips via Chromium PowerSaveBlocker KEEP_SCREEN_ON!)
                     if (stateChanged || (now - lastVideoCheckMs >= 350L)) {
                         lastVideoCheckMs = now;
                         boolean winKeepOn = (w.getAttributes() != null
                                 && (w.getAttributes().flags & WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) != 0);
-                        boolean viewKeepOn = !winKeepOn && !inTabSwitcher && !cachedIsMediaUrl
+                        boolean viewKeepOn = !winKeepOn && !isInViewBackdropMode() && !cachedIsMediaUrl
                                 && hasKeepScreenOnView(decor, 0);
                         boolean audioPlaying = false;
                         if (!cachedIsMediaUrl && !winKeepOn && !viewKeepOn && audioManager != null) {
@@ -4385,25 +5574,25 @@ public final class CouiBrowserUiEnhancer {
                         cachedMediaActive = cachedIsMediaUrl || winKeepOn || viewKeepOn || audioPlaying;
                     }
 
-                    // Round 14: Suppress 60fps SurfaceFlinger GPU blur during video playback, fullscreen,
-                    // or Tab Switcher (Tab Switcher uses RenderNode backdrop blur; normal pages & menus keep 120fps blur!)
+                    // Suppress SurfaceControl GPU blur during video playback, fullscreen, Tab Switcher, or NTP
+                    // (Tab Switcher & NTP use real-time hardware RenderNode vibrant frosted blur instead!)
                     boolean suppressBlur = isFullscreen
-                            || inTabSwitcher
+                            || isInViewBackdropMode()
                             || (!flyoutOpen && !urlFocused && (
                                     cachedIsMediaUrl
                                     || (cachedMediaActive && (now - lastUserInteractionMs >= 1200L))
                                ));
-                    if (cachedMediaActive && !suppressBlur && !flyoutOpen && !urlFocused && !inTabSwitcher && !isFullscreen) {
+                    if (cachedMediaActive && !suppressBlur && !flyoutOpen && !urlFocused && !isInViewBackdropMode() && !isFullscreen) {
                         removeCallbacks(mediaBlurRecheckRunnable);
                         long waitMs = Math.max(100L, 1250L - (now - lastUserInteractionMs));
                         postDelayed(mediaBlurRecheckRunnable, waitMs);
                     }
+                    blurController.setDarkMode(isDark);
                     blurController.setBlurSuppressed(suppressBlur);
 
                     if (barsHiddenByScroll && shouldForceShowBars(decor)) {
                         setBarsHiddenByScroll(false);
                     }
-                    // Keep top control_container strictly at our smooth animated position (prevents Chromium overlap jitter)
                     if (cachedControlContainer != null
                             && Math.abs(cachedControlContainer.getTranslationY() - currentTopTransY) > 0.5f) {
                         cachedControlContainer.setTranslationY(currentTopTransY);
@@ -4418,22 +5607,23 @@ public final class CouiBrowserUiEnhancer {
                         stateChanged = true;
                     }
 
-                    long syncInterval = inTabSwitcher ? 250L : 500L;
+                    long syncInterval = (urlFocused || isInViewBackdropMode()) ? 120L : 500L;
                     if (stateChanged || (now - lastToolbarSyncMs >= syncInterval)) {
                         lastToolbarSyncMs = now;
                         hideTopToolbarButtons(decor);
                         styleTopAddressBarGlass(activity, decor, isDark, blurController.isBlurActive());
                     }
 
-                    // Round 14: Drive Tab Switcher RenderNode blur strictly on entry / scroll / touch (ZERO 120fps idle loop!)
-                    if (inTabSwitcher && !isRecordingTabBackdrop && isShown()) {
-                        int scrollHash = computeTabSwitcherScrollHash(tabHolder);
-                        boolean scrollChanged = (scrollHash != lastTabScrollHash);
-                        boolean recentTouch = (now - lastUserInteractionMs < 400L);
-                        if (!tabBackdropValid || tabBackdropDirty || scrollChanged
-                                || (recentTouch && (now - lastTabBackdropMs >= 16L))) {
-                            lastTabScrollHash = scrollHash;
-                            recordTabSwitcherBackdrop(tabHolder);
+                    // Drive RenderNode vibrant backdrop blur for BOTH Tab Switcher AND NTP strictly on
+                    // entry / scroll / menu open / touch (ZERO 120fps idle loop -> 0% idle CPU!)
+                    if (isInViewBackdropMode() && activeBackdropSource != null && !isRecordingViewBackdrop && isShown()) {
+                        int scrollHash = computeViewBackdropScrollHash(activeBackdropSource);
+                        boolean scrollChanged = (scrollHash != lastViewScrollHash);
+                        boolean recentTouch = (now - lastUserInteractionMs < 450L);
+                        if (!viewBackdropValid || viewBackdropDirty || scrollChanged
+                                || (recentTouch && (now - lastViewBackdropMs >= 16L))) {
+                            lastViewScrollHash = scrollHash;
+                            recordViewBackdrop(activeBackdropSource);
                         }
                     }
                     return true;
@@ -4674,11 +5864,13 @@ public final class CouiBrowserUiEnhancer {
             private float touchX = -1f;
             private float touchY = -1f;
             private float spotlightAlpha = 0f;
+            private float menuMorph = 0f; // 0 = ≡ (Fluent navigation), 1 = × (Fluent dismiss) driven by Rive C++ state machine
             private boolean longPressFired = false;
             private LinearGradient cachedSheen;
             private LinearGradient cachedRim;
             private int cachedW = -1, cachedH = -1;
             private boolean cachedDark = false;
+            private final Paint iconFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
             private final Runnable longPressRunnable = new Runnable() {
                 @Override
                 public void run() {
@@ -4688,6 +5880,13 @@ public final class CouiBrowserUiEnhancer {
                     }
                 }
             };
+
+            void setMenuMorphProgress(float m) {
+                if (!isBack && Math.abs(menuMorph - m) > 0.002f) {
+                    menuMorph = m;
+                    invalidate();
+                }
+            }
 
             AccessoryCircleView(Context ctx, boolean isBack) {
                 super(ctx);
@@ -4715,6 +5914,7 @@ public final class CouiBrowserUiEnhancer {
                 iconPaint.setStrokeWidth(dpF(ctx, 2.0f));
                 iconPaint.setStrokeCap(Paint.Cap.ROUND);
                 iconPaint.setStrokeJoin(Paint.Join.ROUND);
+                iconFillPaint.setStyle(Paint.Style.FILL);
             }
 
             @Override
@@ -4727,12 +5927,13 @@ public final class CouiBrowserUiEnhancer {
                 float radius = Math.min(w, h) * 0.5f;
                 circleRect.set(0.75f, 0.75f, w - 0.75f, h - 0.75f);
 
-                // 1. Calibrated luminous translucent frosted Liquid Glass fill over 10dp SurfaceControl blur
-                //    OR live RenderNode Gaussian backdrop blur over Tab Switcher cards (Round 13)
-                boolean tabBlur = drawTabSwitcherBackdropBlur(canvas, this, circleRect, radius);
-                boolean realBlur = tabBlur || (!inTabSwitcher && blurController.isBlurActive());
+                // 1. Vibrant luminous frosted Liquid Glass fill over OplusBlurParam/SurfaceControl blur
+                //    OR live vibrant RenderNode backdrop blur over Tab Switcher & NTP!
+                boolean viewBlur = drawViewBackdropBlur(canvas, this, circleRect, radius);
+                boolean realBlur = viewBlur || (!isInViewBackdropMode() && blurController.isBlurActive());
                 if (realBlur) {
-                    surfacePaint.setColor(isDark ? 0x781E1E22 : 0x86FFFFFF);
+                    // Airy luminous glaze (lets saturated pastel colors glow through like gallery-navigation-menu.jpg!)
+                    surfacePaint.setColor(isDark ? 0x641C1C20 : 0x56FFFFFF);
                 } else {
                     surfacePaint.setColor(isDark ? 0xD81E1E20 : 0xEBF8F9FB);
                 }
@@ -4743,18 +5944,18 @@ public final class CouiBrowserUiEnhancer {
                     cachedH = h;
                     cachedDark = isDark;
                     cachedSheen = new LinearGradient(
-                            0, 0, w * 0.6f, h,
+                            0, 0, w * 0.55f, h,
                             isDark
-                                    ? new int[]{0x26FFFFFF, 0x06FFFFFF, 0x10000000}
-                                    : new int[]{0x48FFFFFF, 0x10FFFFFF, 0x10E4EAF3},
+                                    ? new int[]{0x2CFFFFFF, 0x08FFFFFF, 0x10000000}
+                                    : new int[]{0x66FFFFFF, 0x1AFFFFFF, 0x16FFFFFF},
                             new float[]{0f, 0.52f, 1f},
                             Shader.TileMode.CLAMP
                     );
                     cachedRim = new LinearGradient(
                             0, 0, w, h,
                             isDark
-                                    ? new int[]{0x76FFFFFF, 0x1EFFFFFF, 0x4CFFFFFF}
-                                    : new int[]{0xFFFFFFFF, 0x3EC6D0DE, 0xE6FFFFFF},
+                                    ? new int[]{0x84FFFFFF, 0x26FFFFFF, 0x58FFFFFF}
+                                    : new int[]{0xFFFFFFFF, 0x62FFFFFF, 0xF2FFFFFF},
                             new float[]{0f, 0.5f, 1f},
                             Shader.TileMode.CLAMP
                     );
@@ -4776,30 +5977,55 @@ public final class CouiBrowserUiEnhancer {
                     canvas.drawRoundRect(circleRect, radius, radius, spotlightPaint);
                 }
 
-                // 3. Subtle outer hairline contour + crisp bright specular rim
+                // 3. Subtle outer hairline contour + crisp luminous specular rim
                 borderPaint.setShader(null);
-                borderPaint.setStrokeWidth(dpF(getContext(), 0.65f));
-                borderPaint.setColor(isDark ? 0x26FFFFFF : 0x18000000);
+                borderPaint.setStrokeWidth(dpF(getContext(), 0.6f));
+                borderPaint.setColor(isDark ? 0x28FFFFFF : 0x14000000);
                 canvas.drawRoundRect(circleRect, radius, radius, borderPaint);
 
                 circleRect.inset(dpF(getContext(), 0.8f), dpF(getContext(), 0.8f));
-                borderPaint.setStrokeWidth(dpF(getContext(), 1.05f));
+                borderPaint.setStrokeWidth(dpF(getContext(), 1.15f));
                 borderPaint.setShader(cachedRim);
                 canvas.drawRoundRect(circleRect, radius - dpF(getContext(), 0.8f), radius - dpF(getContext(), 0.8f), borderPaint);
 
-                // 4. 1:1 ColorOS 17 Bold Vector Icons (23.5dp Back / 22.5dp Menu, 2.15dp stroke)
-                iconPaint.setColor(isDark ? 0xF5FFFFFF : 0xFF141414);
-                iconPaint.setStrokeWidth(dpF(getContext(), 2.15f));
+                // 4. Official Microsoft Fluent UI 24dp Icons + Rive C++ interactive ≡ <-> × morph
+                int fgCol = isDark ? 0xF5FFFFFF : 0xFF141414;
+                iconFillPaint.setColor(fgCol);
+                iconPaint.setColor(fgCol);
                 float cx = w * 0.5f;
                 float cy = h * 0.5f;
                 if (isBack) {
-                    drawCouiBackArrow(canvas, cx, cy, dpF(getContext(), 23.5f), iconPaint);
+                    FluentIcons.drawCentered(canvas, FluentIcons.BACK, cx, cy, dpF(getContext(), 23.0f), iconFillPaint);
+                } else if (menuMorph <= 0.01f) {
+                    FluentIcons.drawCentered(canvas, FluentIcons.MENU_REGULAR, cx, cy, dpF(getContext(), 23.0f), iconFillPaint);
+                } else if (menuMorph >= 0.99f) {
+                    FluentIcons.drawCentered(canvas, FluentIcons.DISMISS, cx, cy, dpF(getContext(), 21.5f), iconFillPaint);
                 } else {
-                    float r = dpF(getContext(), 9.2f);
-                    float dy = dpF(getContext(), 6.0f);
-                    canvas.drawLine(cx - r, cy - dy, cx + r, cy - dy, iconPaint);
-                    canvas.drawLine(cx - r, cy, cx + r, cy, iconPaint);
-                    canvas.drawLine(cx - r, cy + dy, cx + r, cy + dy, iconPaint);
+                    // Smooth vector morph driven by libtitanium_rive.so state machine: ≡ bars rotate & converge into ×
+                    float t = Math.max(0f, Math.min(1f, menuMorph));
+                    float halfLen = dpF(getContext(), 9.0f - 1.2f * t);
+                    float dy = dpF(getContext(), 5.8f * (1.0f - t));
+                    float angle = 45.0f * t;
+                    iconPaint.setStrokeWidth(dpF(getContext(), 1.85f));
+                    iconPaint.setAlpha(255);
+                    // Top bar -> '\'
+                    int s1 = canvas.save();
+                    canvas.translate(cx, cy - dy);
+                    canvas.rotate(angle);
+                    canvas.drawLine(-halfLen, 0f, halfLen, 0f, iconPaint);
+                    canvas.restoreToCount(s1);
+                    // Bottom bar -> '/'
+                    int s2 = canvas.save();
+                    canvas.translate(cx, cy + dy);
+                    canvas.rotate(-angle);
+                    canvas.drawLine(-halfLen, 0f, halfLen, 0f, iconPaint);
+                    canvas.restoreToCount(s2);
+                    // Middle bar contracts & fades out cleanly
+                    float midScale = Math.max(0f, 1.0f - t * 1.45f);
+                    if (midScale > 0.02f) {
+                        iconPaint.setAlpha(Math.round(255 * midScale));
+                        canvas.drawLine(cx - halfLen * midScale, cy, cx + halfLen * midScale, cy, iconPaint);
+                    }
                 }
             }
 
@@ -4960,12 +6186,12 @@ public final class CouiBrowserUiEnhancer {
                 float radius = h * 0.5f;
                 capsuleRect.set(0.75f, 0.75f, w - 0.75f, h - 0.75f);
 
-                // 1. Calibrated luminous translucent frosted Liquid Glass capsule fill
-                //    (supports both SurfaceControl blur over webpages & RenderNode blur over Tab Switcher!)
-                boolean tabBlur = drawTabSwitcherBackdropBlur(canvas, this, capsuleRect, radius);
-                boolean realBlur = tabBlur || (!inTabSwitcher && blurController.isBlurActive());
+                // 1. Vibrant luminous frosted Liquid Glass capsule fill
+                //    (supports SurfaceControl OplusBlurParam over webpages & vibrant RenderNode blur over Tab Switcher + NTP!)
+                boolean viewBlur = drawViewBackdropBlur(canvas, this, capsuleRect, radius);
+                boolean realBlur = viewBlur || (!isInViewBackdropMode() && blurController.isBlurActive());
                 if (realBlur) {
-                    surfacePaint.setColor(isDark ? 0x781E1E22 : 0x86FFFFFF);
+                    surfacePaint.setColor(isDark ? 0x641C1C20 : 0x56FFFFFF);
                 } else {
                     surfacePaint.setColor(isDark ? 0xD81E1E20 : 0xEBF8F9FB);
                 }
@@ -4978,16 +6204,16 @@ public final class CouiBrowserUiEnhancer {
                     cachedSheen = new LinearGradient(
                             0, 0, w * 0.45f, h,
                             isDark
-                                    ? new int[]{0x26FFFFFF, 0x06FFFFFF, 0x10000000}
-                                    : new int[]{0x48FFFFFF, 0x10FFFFFF, 0x10E4EAF3},
+                                    ? new int[]{0x2CFFFFFF, 0x08FFFFFF, 0x10000000}
+                                    : new int[]{0x66FFFFFF, 0x1AFFFFFF, 0x16FFFFFF},
                             new float[]{0f, 0.52f, 1f},
                             Shader.TileMode.CLAMP
                     );
                     cachedRim = new LinearGradient(
                             0, 0, w, h,
                             isDark
-                                    ? new int[]{0x76FFFFFF, 0x1EFFFFFF, 0x4CFFFFFF}
-                                    : new int[]{0xFFFFFFFF, 0x3EC6D0DE, 0xE6FFFFFF},
+                                    ? new int[]{0x84FFFFFF, 0x26FFFFFF, 0x58FFFFFF}
+                                    : new int[]{0xFFFFFFFF, 0x62FFFFFF, 0xF2FFFFFF},
                             new float[]{0f, 0.5f, 1f},
                             Shader.TileMode.CLAMP
                     );
@@ -5009,14 +6235,14 @@ public final class CouiBrowserUiEnhancer {
                     canvas.drawRoundRect(capsuleRect, radius, radius, spotlightPaint);
                 }
 
-                // 3. Subtle outer hairline contour + crisp bright specular rim highlight
+                // 3. Subtle outer hairline contour + crisp luminous specular rim highlight
                 borderPaint.setShader(null);
-                borderPaint.setStrokeWidth(dpF(getContext(), 0.65f));
-                borderPaint.setColor(isDark ? 0x26FFFFFF : 0x18000000);
+                borderPaint.setStrokeWidth(dpF(getContext(), 0.6f));
+                borderPaint.setColor(isDark ? 0x28FFFFFF : 0x14000000);
                 canvas.drawRoundRect(capsuleRect, radius, radius, borderPaint);
 
                 capsuleRect.inset(dpF(getContext(), 0.8f), dpF(getContext(), 0.8f));
-                borderPaint.setStrokeWidth(dpF(getContext(), 1.05f));
+                borderPaint.setStrokeWidth(dpF(getContext(), 1.15f));
                 borderPaint.setShader(cachedRim);
                 canvas.drawRoundRect(capsuleRect, radius - dpF(getContext(), 0.8f), radius - dpF(getContext(), 0.8f), borderPaint);
 
@@ -5041,115 +6267,34 @@ public final class CouiBrowserUiEnhancer {
                     canvas.drawRoundRect(dropletRect, dropR, dropR, dropletRimPaint);
                 }
 
-                // 5. Draw 3 center items (Search, Home, Tabs) at 1:1 ColorOS 17 File Manager & Gallery scale:
-                //    22dp geometric icons, bold negative-space filled active + crisp 2.0dp outline inactive
+                // 5. Draw 3 center items (Search, Home, Tabs) with official Microsoft Fluent UI 24dp icons
+                //    (*-24-filled active / *-24-regular default) and balanced ColorOS 17 Gallery vertical padding
+                //    (labels raised cleanly away from bottom edge, matching gallery-navigation-menu.jpg 1:1!)
                 int selectedColor = isDark ? 0xFAFFFFFF : 0xFF141414;
-                int unselectedColor = isDark ? 0xA8FFFFFF : 0xFF555555;
-                int cutoutColor = isDark ? 0xFF232327 : 0xFFF4F6F9;
+                int unselectedColor = isDark ? 0xB3FFFFFF : 0xFF4B4E54;
+                float iconSizePx = dpF(getContext(), 22.0f);
+                float iconCy = dpF(getContext(), 20.0f); // Tighter icon-to-label gap + balanced top/bottom padding
+                float textY = h - dpF(getContext(), 11.4f); // ~11.4dp bottom clearance matching gallery-navigation-menu.jpg
 
                 for (int i = 0; i < CENTER_ITEM_COUNT; i++) {
                     float icx = itemCenterX(i);
                     boolean isSel = (i == selectedCenterIndex);
                     int col = isSel ? selectedColor : unselectedColor;
-                    iconStrokePaint.setColor(col);
-                    iconStrokePaint.setStrokeWidth(dpF(getContext(), isSel ? 2.4f : 1.95f));
                     iconFillPaint.setColor(col);
-                    iconCutoutPaint.setColor(cutoutColor);
-                    iconCutoutPaint.setStrokeWidth(dpF(getContext(), 2.0f));
 
                     textPaint.setColor(col);
                     textPaint.setFakeBoldText(isSel);
 
-                    float iconCy = dpF(getContext(), 21.0f);
-                    float iconR = dpF(getContext(), 10.6f); // ~21.5-22.5dp authentic ColorOS 17 icon box
-                    drawCenterNavIcon(canvas, i, icx, iconCy, iconR, isSel);
-
-                    float textY = h - dpF(getContext(), 7.8f);
+                    int fluentId;
+                    if (i == 0) {
+                        fluentId = isSel ? FluentIcons.SEARCH_FILLED : FluentIcons.SEARCH_REGULAR;
+                    } else if (i == 1) {
+                        fluentId = isSel ? FluentIcons.HOME_FILLED : FluentIcons.HOME_REGULAR;
+                    } else {
+                        fluentId = isSel ? FluentIcons.TABS_FILLED : FluentIcons.TABS_REGULAR;
+                    }
+                    FluentIcons.drawCentered(canvas, fluentId, icx, iconCy, iconSizePx, iconFillPaint);
                     canvas.drawText(CENTER_LABELS[i], icx, textY, textPaint);
-                }
-            }
-
-            private void drawCenterNavIcon(Canvas c, int index, float cx, float cy, float r, boolean selected) {
-                Path p = new Path();
-                switch (index) {
-                    case 0: // Search (1:1 ColorOS 17 bold thick-ring lens active + clean outline inactive)
-                        float gx = cx - r * 0.14f;
-                        float gy = cy - r * 0.14f;
-                        float gr = r * 0.62f;
-                        if (selected) {
-                            // Thick bold solid ring bezel (negative-space inner lens cutout, NEVER a black lollipop!)
-                            c.drawCircle(gx, gy, gr + dpF(getContext(), 0.7f), iconFillPaint);
-                            iconCutoutPaint.setStyle(Paint.Style.FILL);
-                            c.drawCircle(gx, gy, gr * 0.44f, iconCutoutPaint);
-                            iconCutoutPaint.setStyle(Paint.Style.STROKE);
-                            iconStrokePaint.setStrokeWidth(dpF(getContext(), 2.85f));
-                            c.drawLine(cx + r * 0.30f, cy + r * 0.30f, cx + r * 0.84f, cy + r * 0.84f, iconStrokePaint);
-                        } else {
-                            c.drawCircle(gx, gy, gr, iconStrokePaint);
-                            c.drawLine(cx + r * 0.34f, cy + r * 0.34f, cx + r * 0.84f, cy + r * 0.84f, iconStrokePaint);
-                        }
-                        break;
-                    case 1: // Home (1:1 ColorOS 17 rounded-roof solid house with pill door cutout active, clean rounded outline inactive)
-                        if (selected) {
-                            p.moveTo(cx, cy - r * 0.86f);
-                            p.quadTo(cx + r * 0.14f, cy - r * 0.86f, cx + r * 0.86f, cy - r * 0.16f);
-                            p.quadTo(cx + r * 0.94f, cy - r * 0.08f, cx + r * 0.84f, cy - r * 0.02f);
-                            p.lineTo(cx + r * 0.74f, cy - r * 0.02f);
-                            p.lineTo(cx + r * 0.74f, cy + r * 0.66f);
-                            p.quadTo(cx + r * 0.74f, cy + r * 0.86f, cx + r * 0.52f, cy + r * 0.86f);
-                            p.lineTo(cx - r * 0.52f, cy + r * 0.86f);
-                            p.quadTo(cx - r * 0.74f, cy + r * 0.86f, cx - r * 0.74f, cy + r * 0.66f);
-                            p.lineTo(cx - r * 0.74f, cy - r * 0.02f);
-                            p.lineTo(cx - r * 0.84f, cy - r * 0.02f);
-                            p.quadTo(cx - r * 0.94f, cy - r * 0.08f, cx - r * 0.86f, cy - r * 0.16f);
-                            p.quadTo(cx - r * 0.14f, cy - r * 0.86f, cx, cy - r * 0.86f);
-                            p.close();
-                            c.drawPath(p, iconFillPaint);
-                            // Crisp rounded negative-space door pill inside lower house body
-                            iconCutoutPaint.setStrokeWidth(dpF(getContext(), 2.2f));
-                            c.drawLine(cx - r * 0.24f, cy + r * 0.44f, cx + r * 0.24f, cy + r * 0.44f, iconCutoutPaint);
-                        } else {
-                            p.moveTo(cx - r * 0.84f, cy - r * 0.08f);
-                            p.lineTo(cx - r * 0.10f, cy - r * 0.78f);
-                            p.quadTo(cx, cy - r * 0.87f, cx + r * 0.10f, cy - r * 0.78f);
-                            p.lineTo(cx + r * 0.84f, cy - r * 0.08f);
-                            p.moveTo(cx - r * 0.66f, cy - r * 0.20f);
-                            p.lineTo(cx - r * 0.66f, cy + r * 0.62f);
-                            p.quadTo(cx - r * 0.66f, cy + r * 0.82f, cx - r * 0.46f, cy + r * 0.82f);
-                            p.lineTo(cx + r * 0.46f, cy + r * 0.82f);
-                            p.quadTo(cx + r * 0.66f, cy + r * 0.82f, cx + r * 0.66f, cy + r * 0.62f);
-                            p.lineTo(cx + r * 0.66f, cy - r * 0.20f);
-                            c.drawPath(p, iconStrokePaint);
-                            c.drawLine(cx - r * 0.22f, cy + r * 0.42f, cx + r * 0.22f, cy + r * 0.42f, iconStrokePaint);
-                        }
-                        break;
-                    case 2: // Tabs (1:1 ColorOS 17 layered rounded card + crisp '+' matching Gallery/File Manager proportions)
-                        float off = r * 0.13f;
-                        RectF frontRect = new RectF(cx - r * 0.80f, cy - r * 0.64f, cx + r * 0.62f, cy + r * 0.78f);
-                        float cr = r * 0.34f;
-                        // Subtle stacked back-tab top-right arc peek
-                        p.moveTo(cx - r * 0.44f, cy - r * 0.84f);
-                        p.lineTo(cx + r * 0.48f, cy - r * 0.84f);
-                        p.quadTo(cx + r * 0.84f, cy - r * 0.84f, cx + r * 0.84f, cy - r * 0.48f);
-                        p.lineTo(cx + r * 0.84f, cy + r * 0.44f);
-                        iconStrokePaint.setStrokeWidth(dpF(getContext(), selected ? 2.15f : 1.75f));
-                        c.drawPath(p, iconStrokePaint);
-                        if (selected) {
-                            c.drawRoundRect(frontRect, cr, cr, iconFillPaint);
-                            float fcx = frontRect.centerX();
-                            float fcy = frontRect.centerY();
-                            iconCutoutPaint.setStrokeWidth(dpF(getContext(), 2.15f));
-                            c.drawLine(fcx - r * 0.32f, fcy, fcx + r * 0.32f, fcy, iconCutoutPaint);
-                            c.drawLine(fcx, fcy - r * 0.32f, fcx, fcy + r * 0.32f, iconCutoutPaint);
-                        } else {
-                            iconStrokePaint.setStrokeWidth(dpF(getContext(), 1.95f));
-                            c.drawRoundRect(frontRect, cr, cr, iconStrokePaint);
-                            float fcx = frontRect.centerX();
-                            float fcy = frontRect.centerY();
-                            c.drawLine(fcx - r * 0.30f, fcy, fcx + r * 0.30f, fcy, iconStrokePaint);
-                            c.drawLine(fcx, fcy - r * 0.30f, fcx, fcy + r * 0.30f, iconStrokePaint);
-                        }
-                        break;
                 }
             }
 
@@ -5310,6 +6455,86 @@ public final class CouiBrowserUiEnhancer {
         private final View topDivider;
         private boolean isDark;
         private boolean open = false;
+        private boolean animRunning = false;
+        private long lastFrameNanos = 0L;
+        private final TitaniumRiveEngine.MenuStateMachine stateMachine = new TitaniumRiveEngine.MenuStateMachine();
+        private final float[] smOut = new float[5]; // [scale, transYFrac, alpha, iconMorph, rowCascade]
+
+        private final Choreographer.FrameCallback menuSpringTick = new Choreographer.FrameCallback() {
+            @Override
+            public void doFrame(long frameTimeNanos) {
+                if (!animRunning) return;
+                float dt = (lastFrameNanos == 0L)
+                        ? 0.008f
+                        : Math.max(0.004f, Math.min(0.032f, (frameTimeNanos - lastFrameNanos) / 1_000_000_000f));
+                lastFrameNanos = frameTimeNanos;
+
+                boolean stillActive = stateMachine.advance(dt, smOut);
+                float sc = Math.max(0.05f, smOut[0]);
+                float ty = smOut[1] * dpF(activity, 18f);
+                float al = smOut[2];
+                float morph = smOut[3];
+
+                int cw = cardView.getWidth();
+                int ch = cardView.getHeight();
+                if (cw > 0 && ch > 0) {
+                    // Bottom-right anchor directly above the Menu circle (pivotX ~88%, pivotY = 100%)
+                    cardView.setPivotX(cw * 0.88f);
+                    cardView.setPivotY(ch);
+                }
+                cardView.setScaleX(sc);
+                cardView.setScaleY(sc);
+                cardView.setTranslationY(ty);
+                cardView.setAlpha(al);
+                cardView.invalidate();
+                if (navBar != null) {
+                    navBar.setMenuMorphProgress(morph);
+                }
+                if (blurController != null) {
+                    blurController.update();
+                }
+
+                if (stillActive) {
+                    Choreographer.getInstance().postFrameCallback(this);
+                } else {
+                    animRunning = false;
+                    if (!open) {
+                        setVisibility(View.GONE);
+                        if (navBar != null) navBar.setMenuMorphProgress(0f);
+                        if (blurController != null) blurController.update();
+                    } else {
+                        cardView.setScaleX(1f);
+                        cardView.setScaleY(1f);
+                        cardView.setTranslationY(0f);
+                        cardView.setAlpha(1f);
+                        if (navBar != null) navBar.setMenuMorphProgress(1f);
+                    }
+                }
+            }
+        };
+
+        private void startMenuSpringLoop() {
+            if (animRunning) {
+                Choreographer.getInstance().removeFrameCallback(menuSpringTick);
+            }
+            lastFrameNanos = 0L;
+            animRunning = true;
+            Choreographer.getInstance().postFrameCallback(menuSpringTick);
+        }
+
+        @Override
+        protected void onDetachedFromWindow() {
+            if (animRunning) {
+                animRunning = false;
+                Choreographer.getInstance().removeFrameCallback(menuSpringTick);
+            }
+            stateMachine.release();
+            super.onDetachedFromWindow();
+        }
+
+        public boolean isAnimating() {
+            return animRunning;
+        }
 
         public CouiGlassFlyoutOverlay(Activity activity, boolean isDark, SurfaceViewBlurController blurController) {
             this(activity, isDark, blurController, null);
@@ -5505,23 +6730,21 @@ public final class CouiBrowserUiEnhancer {
             setVisibility(View.VISIBLE);
             requestFocus();
             cardView.animate().cancel();
+            if (navBar != null) {
+                navBar.markViewBackdropDirty();
+            }
             cardView.setAlpha(0f);
-            cardView.setScaleX(0.64f);
-            cardView.setScaleY(0.64f);
+            cardView.setScaleX(0.28f);
+            cardView.setScaleY(0.28f);
+            cardView.setTranslationY(dpF(activity, 18f));
+            stateMachine.setMenuOpen(true);
             cardView.post(new Runnable() {
                 @Override
                 public void run() {
                     if (!open) return;
-                    // Pivot right above the bottom-right Menu circle center (correct-flyout.mp4)
-                    cardView.setPivotX(Math.max(0f, cardView.getWidth() - dpF(activity, 28f)));
+                    cardView.setPivotX(cardView.getWidth() * 0.88f);
                     cardView.setPivotY(cardView.getHeight());
-                    cardView.animate()
-                            .scaleX(1f)
-                            .scaleY(1f)
-                            .alpha(1f)
-                            .setDuration(260)
-                            .setInterpolator(new OvershootInterpolator(0.95f))
-                            .start();
+                    startMenuSpringLoop();
                 }
             });
         }
@@ -5530,24 +6753,10 @@ public final class CouiBrowserUiEnhancer {
             if (!open) return;
             open = false;
             cardView.animate().cancel();
-            cardView.setPivotX(Math.max(0f, cardView.getWidth() - dpF(activity, 28f)));
+            cardView.setPivotX(cardView.getWidth() * 0.88f);
             cardView.setPivotY(cardView.getHeight());
-            cardView.animate()
-                    .scaleX(0.76f)
-                    .scaleY(0.76f)
-                    .alpha(0f)
-                    .setDuration(170)
-                    .setInterpolator(new DecelerateInterpolator(1.6f))
-                    .withEndAction(new Runnable() {
-                        @Override
-                        public void run() {
-                            if (!open) {
-                                setVisibility(View.GONE);
-                                if (blurController != null) blurController.update();
-                            }
-                        }
-                    })
-                    .start();
+            stateMachine.setMenuOpen(false);
+            startMenuSpringLoop();
         }
 
         @Override
@@ -5608,11 +6817,12 @@ public final class CouiBrowserUiEnhancer {
                 if (w > 0 && h > 0) {
                     float r = dpF(getContext(), 20f);
                     cardRect.set(0.75f, 0.75f, w - 0.75f, h - 0.75f);
-                    boolean tabBlur = (navBar != null && navBar.drawTabSwitcherBackdropBlur(canvas, this, cardRect, r));
-                    boolean realBlur = tabBlur || ((navBar == null || !navBar.isInTabSwitcher())
+                    boolean viewBlur = (navBar != null && navBar.drawViewBackdropBlur(canvas, this, cardRect, r));
+                    boolean realBlur = viewBlur || ((navBar == null || !navBar.isInViewBackdropMode())
                             && blurController != null && blurController.isBlurActive());
                     if (realBlur) {
-                        bgPaint.setColor(isDark ? 0xAE202024 : 0xACFFFFFF);
+                        // Vibrant luminous frosted glass matching gallery-menu-animation.mp4 (works on Webpages, NTP & Tab Switcher!)
+                        bgPaint.setColor(isDark ? 0x8A1E1E22 : 0x74FFFFFF);
                     } else {
                         bgPaint.setColor(isDark ? 0xF0222224 : 0xF5F8F9FB);
                     }
@@ -5621,8 +6831,8 @@ public final class CouiBrowserUiEnhancer {
                     LinearGradient sheen = new LinearGradient(
                             0, 0, w * 0.55f, h * 0.75f,
                             isDark
-                                    ? new int[]{0x22FFFFFF, 0x06FFFFFF, 0x10000000}
-                                    : new int[]{0x52FFFFFF, 0x12FFFFFF, 0x12E2E8F2},
+                                    ? new int[]{0x28FFFFFF, 0x08FFFFFF, 0x10000000}
+                                    : new int[]{0x64FFFFFF, 0x1CFFFFFF, 0x14E8EEF6},
                             new float[]{0f, 0.5f, 1f},
                             Shader.TileMode.CLAMP
                     );
@@ -5630,20 +6840,20 @@ public final class CouiBrowserUiEnhancer {
                     canvas.drawRoundRect(cardRect, r, r, sheenPaint);
 
                     rimPaint.setShader(null);
-                    rimPaint.setStrokeWidth(dpF(getContext(), 0.75f));
-                    rimPaint.setColor(isDark ? 0x26FFFFFF : 0x1A000000);
+                    rimPaint.setStrokeWidth(dpF(getContext(), 0.7f));
+                    rimPaint.setColor(isDark ? 0x28FFFFFF : 0x16000000);
                     canvas.drawRoundRect(cardRect, r, r, rimPaint);
 
                     cardRect.inset(dpF(getContext(), 0.8f), dpF(getContext(), 0.8f));
                     LinearGradient rimGrad = new LinearGradient(
                             0, 0, w, h,
                             isDark
-                                    ? new int[]{0x68FFFFFF, 0x1EFFFFFF, 0x42FFFFFF}
-                                    : new int[]{0xFAFFFFFF, 0x4CCCD4DF, 0xD8FFFFFF},
+                                    ? new int[]{0x74FFFFFF, 0x22FFFFFF, 0x4CFFFFFF}
+                                    : new int[]{0xFFFFFFFF, 0x56FFFFFF, 0xE6FFFFFF},
                             new float[]{0f, 0.5f, 1f},
                             Shader.TileMode.CLAMP
                     );
-                    rimPaint.setStrokeWidth(dpF(getContext(), 1.0f));
+                    rimPaint.setStrokeWidth(dpF(getContext(), 1.1f));
                     rimPaint.setShader(rimGrad);
                     canvas.drawRoundRect(cardRect, r - dpF(getContext(), 0.8f), r - dpF(getContext(), 0.8f), rimPaint);
                 }
@@ -5652,20 +6862,35 @@ public final class CouiBrowserUiEnhancer {
         }
 
         private static final class FlyoutIconView extends View {
-            private final int iconType;
+            private final int fluentIconId;
             private boolean isDark;
             private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-            private final Path path = new Path();
-            private final RectF rf = new RectF();
 
             FlyoutIconView(Context ctx, int iconType, boolean isDark) {
                 super(ctx);
-                this.iconType = iconType;
+                this.fluentIconId = mapToFluentIcon(iconType);
                 this.isDark = isDark;
-                p.setStyle(Paint.Style.STROKE);
-                p.setStrokeCap(Paint.Cap.ROUND);
-                p.setStrokeJoin(Paint.Join.ROUND);
-                p.setStrokeWidth(dpF(ctx, 1.75f));
+                p.setStyle(Paint.Style.FILL);
+            }
+
+            private static int mapToFluentIcon(int iconType) {
+                switch (iconType) {
+                    case ICON_NEW_TAB: return FluentIcons.NEW_TAB;
+                    case ICON_INCOGNITO: return FluentIcons.INCOGNITO;
+                    case ICON_BOOKMARKS: return FluentIcons.BOOKMARKS;
+                    case ICON_STAR: return FluentIcons.BOOKMARK_STAR;
+                    case ICON_HISTORY: return FluentIcons.HISTORY;
+                    case ICON_DOWNLOADS: return FluentIcons.DOWNLOADS;
+                    case ICON_SAVE: return FluentIcons.DOWNLOAD_PAGE;
+                    case ICON_EXTENSIONS: return FluentIcons.EXTENSIONS;
+                    case ICON_SHARE: return FluentIcons.SHARE;
+                    case ICON_FIND: return FluentIcons.FIND_IN_PAGE;
+                    case ICON_DESKTOP: return FluentIcons.DESKTOP_SITE;
+                    case ICON_SETTINGS: return FluentIcons.SETTINGS;
+                    case ICON_FORWARD: return FluentIcons.FORWARD;
+                    case ICON_RELOAD: return FluentIcons.RELOAD;
+                    default: return FluentIcons.SETTINGS;
+                }
             }
 
             void setDarkMode(boolean dark) {
@@ -5679,116 +6904,9 @@ public final class CouiBrowserUiEnhancer {
                 float w = getWidth();
                 float h = getHeight();
                 if (w <= 0 || h <= 0) return;
-                float cx = w * 0.5f;
-                float cy = h * 0.5f;
-                float r = Math.min(w, h) * 0.40f;
-                p.setColor(isDark ? 0xE6FFFFFF : 0xFF191919);
-                p.setStyle(Paint.Style.STROKE);
-                path.reset();
-
-                switch (iconType) {
-                    case ICON_NEW_TAB:
-                        rf.set(cx - r, cy - r, cx + r, cy + r);
-                        c.drawRoundRect(rf, r * 0.38f, r * 0.38f, p);
-                        c.drawLine(cx - r * 0.42f, cy, cx + r * 0.42f, cy, p);
-                        c.drawLine(cx, cy - r * 0.42f, cx, cy + r * 0.42f, p);
-                        break;
-                    case ICON_INCOGNITO:
-                        // Hat brim + dome + two lenses
-                        c.drawLine(cx - r * 1.05f, cy - r * 0.08f, cx + r * 1.05f, cy - r * 0.08f, p);
-                        path.moveTo(cx - r * 0.65f, cy - r * 0.08f);
-                        path.lineTo(cx - r * 0.42f, cy - r * 0.85f);
-                        path.lineTo(cx + r * 0.42f, cy - r * 0.85f);
-                        path.lineTo(cx + r * 0.65f, cy - r * 0.08f);
-                        c.drawPath(path, p);
-                        c.drawCircle(cx - r * 0.46f, cy + r * 0.46f, r * 0.30f, p);
-                        c.drawCircle(cx + r * 0.46f, cy + r * 0.46f, r * 0.30f, p);
-                        c.drawLine(cx - r * 0.16f, cy + r * 0.46f, cx + r * 0.16f, cy + r * 0.46f, p);
-                        break;
-                    case ICON_BOOKMARKS:
-                    case ICON_STAR:
-                        for (int i = 0; i < 10; i++) {
-                            double ang = Math.toRadians(-90 + i * 36);
-                            float rr = (i % 2 == 0) ? r * 1.02f : r * 0.44f;
-                            float px = cx + (float) (Math.cos(ang) * rr);
-                            float py = cy + (float) (Math.sin(ang) * rr);
-                            if (i == 0) path.moveTo(px, py); else path.lineTo(px, py);
-                        }
-                        path.close();
-                        c.drawPath(path, p);
-                        break;
-                    case ICON_HISTORY:
-                        rf.set(cx - r * 0.92f, cy - r * 0.92f, cx + r * 0.92f, cy + r * 0.92f);
-                        c.drawArc(rf, -50f, 300f, false, p);
-                        c.drawLine(cx, cy, cx, cy - r * 0.46f, p);
-                        c.drawLine(cx, cy, cx + r * 0.36f, cy + r * 0.24f, p);
-                        break;
-                    case ICON_DOWNLOADS:
-                    case ICON_SAVE:
-                        c.drawLine(cx, cy - r * 0.88f, cx, cy + r * 0.34f, p);
-                        path.moveTo(cx - r * 0.48f, cy - r * 0.06f);
-                        path.lineTo(cx, cy + r * 0.42f);
-                        path.lineTo(cx + r * 0.48f, cy - r * 0.06f);
-                        c.drawPath(path, p);
-                        c.drawLine(cx - r * 0.82f, cy + r * 0.84f, cx + r * 0.82f, cy + r * 0.84f, p);
-                        break;
-                    case ICON_EXTENSIONS:
-                        // Puzzle / extension tile
-                        rf.set(cx - r * 0.82f, cy - r * 0.56f, cx + r * 0.56f, cy + r * 0.82f);
-                        c.drawRoundRect(rf, r * 0.28f, r * 0.28f, p);
-                        c.drawCircle(cx - r * 0.13f, cy - r * 0.78f, r * 0.22f, p);
-                        c.drawCircle(cx + r * 0.78f, cy + r * 0.13f, r * 0.22f, p);
-                        break;
-                    case ICON_SHARE:
-                        c.drawLine(cx, cy + r * 0.32f, cx, cy - r * 0.88f, p);
-                        path.moveTo(cx - r * 0.46f, cy - r * 0.44f);
-                        path.lineTo(cx, cy - r * 0.90f);
-                        path.lineTo(cx + r * 0.46f, cy - r * 0.44f);
-                        path.moveTo(cx - r * 0.78f, cy + r * 0.06f);
-                        path.lineTo(cx - r * 0.78f, cy + r * 0.84f);
-                        path.lineTo(cx + r * 0.78f, cy + r * 0.84f);
-                        path.lineTo(cx + r * 0.78f, cy + r * 0.06f);
-                        c.drawPath(path, p);
-                        break;
-                    case ICON_FIND:
-                        c.drawCircle(cx - r * 0.16f, cy - r * 0.16f, r * 0.68f, p);
-                        c.drawLine(cx + r * 0.34f, cy + r * 0.34f, cx + r * 0.90f, cy + r * 0.90f, p);
-                        break;
-                    case ICON_DESKTOP:
-                        rf.set(cx - r * 0.96f, cy - r * 0.76f, cx + r * 0.96f, cy + r * 0.44f);
-                        c.drawRoundRect(rf, r * 0.22f, r * 0.22f, p);
-                        c.drawLine(cx, cy + r * 0.44f, cx, cy + r * 0.84f, p);
-                        c.drawLine(cx - r * 0.48f, cy + r * 0.84f, cx + r * 0.48f, cy + r * 0.84f, p);
-                        break;
-                    case ICON_SETTINGS:
-                        c.drawCircle(cx, cy, r * 0.36f, p);
-                        rf.set(cx - r * 0.82f, cy - r * 0.82f, cx + r * 0.82f, cy + r * 0.82f);
-                        c.drawCircle(cx, cy, r * 0.82f, p);
-                        for (int i = 0; i < 6; i++) {
-                            double ang = Math.toRadians(i * 60);
-                            c.drawLine(cx + (float) Math.cos(ang) * r * 0.78f,
-                                    cy + (float) Math.sin(ang) * r * 0.78f,
-                                    cx + (float) Math.cos(ang) * r * 1.04f,
-                                    cy + (float) Math.sin(ang) * r * 1.04f, p);
-                        }
-                        break;
-                    case ICON_FORWARD:
-                        path.moveTo(cx - r * 0.78f, cy);
-                        path.lineTo(cx + r * 0.78f, cy);
-                        path.moveTo(cx + r * 0.18f, cy - r * 0.62f);
-                        path.lineTo(cx + r * 0.80f, cy);
-                        path.lineTo(cx + r * 0.18f, cy + r * 0.62f);
-                        c.drawPath(path, p);
-                        break;
-                    case ICON_RELOAD:
-                        rf.set(cx - r * 0.86f, cy - r * 0.86f, cx + r * 0.86f, cy + r * 0.86f);
-                        c.drawArc(rf, -45f, 290f, false, p);
-                        path.moveTo(cx + r * 0.32f, cy - r * 0.92f);
-                        path.lineTo(cx + r * 0.76f, cy - r * 0.56f);
-                        path.lineTo(cx + r * 0.30f, cy - r * 0.32f);
-                        c.drawPath(path, p);
-                        break;
-                }
+                p.setColor(isDark ? 0xEBFFFFFF : 0xFF191919);
+                float sz = Math.min(w, h) * 1.04f;
+                FluentIcons.drawCentered(c, fluentIconId, w * 0.5f, h * 0.5f, sz, p);
             }
         }
     }
