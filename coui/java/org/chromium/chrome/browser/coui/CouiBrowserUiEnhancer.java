@@ -76,6 +76,7 @@ import android.view.accessibility.AccessibilityEvent;
 import android.view.animation.DecelerateInterpolator;
 import android.view.animation.Interpolator;
 import android.view.animation.OvershootInterpolator;
+import android.view.animation.PathInterpolator;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.CompoundButton;
@@ -217,6 +218,7 @@ public final class CouiBrowserUiEnhancer {
     private static final int ID_NTP_MV_TILES_LAYOUT = 0x7f010846;
     private static final int ID_NTP_TILE_ICON_BG = 0x7f010d3b;
     private static final int ID_NTP_TILE_TITLE = 0x7f010d3c;
+    private static final int ID_CUSTOMIZE_BUTTON = 0x7f0103ab;
     private static final int ID_SE_RADIO_BUTTON = 0x7f010a53;
     private static final int ID_SE_NAME = 0x7f01084a;
     private static final int ID_SE_URL = 0x7f010ddc;
@@ -224,6 +226,8 @@ public final class CouiBrowserUiEnhancer {
     private static final int ID_SEARCH_CLEAR_BTN = 0x7f0102bc;
     private static final String SETTINGS_OBSERVER_TAG = "coui_settings_frag_observer";
     private static final String SETTINGS_LARGE_TITLE_TAG = "coui_settings_large_title";
+    private static final String SETTINGS_SLIDE_STAGE_TAG = "coui_settings_slide_stage";
+    private static final String TAB_HOLDER_GUARD_TAG = "coui_tab_holder_hierarchy_guard";
     private static final String NTP_SEARCH_HEADING_TAG = "coui_ntp_search_heading";
     private static final String RADIO_TAG = "coui_radio_styled";
 
@@ -276,6 +280,12 @@ public final class CouiBrowserUiEnhancer {
     private static Field sSwitchThumbPosField;
     private static boolean sSwitchThumbPosResolved = false;
     private static java.lang.ref.WeakReference<CouiLiquidGlassNavBar> sActiveNavBar;
+    private static boolean sSettingsSlideActive = false;
+    private static final WeakHashMap<Activity, CouiSettingsPageSlideController> sSettingsSlideControllers = new WeakHashMap<>();
+    private static Field sFmHostField;
+    private static Field sHostActivityField;
+    private static Method sFmBackStackCountMethod;
+    private static boolean sFmReflectInit = false;
 
     static {
         DIVIDER_PAINT.setStyle(Paint.Style.FILL);
@@ -821,12 +831,11 @@ public final class CouiBrowserUiEnhancer {
             }
 
             // 1. Top-left '+' New Tab button (0x7f010d6d ChromeImageButton AND 0x7f010d6b Button inside 0x7f010d6c)
-            //    In res/Io.xml, HubToolbarView uses 0x7f010d6b (Button with compound drawable '+' and tinted
-            //    rounded-square background) or 0x7f010d6d (ChromeImageButton). Style BOTH with a clean COUI
-            //    14dp squircle (#FFFFFF / #1C1C1E) and crisp #191919 / #E6FFFFFF '+' icon!
+            //    Round 17: Use tint-immune CouiHubNewTabBgDrawable + strip backgroundTintList immediately so
+            //    Chromium's Material You slate-blue tint NEVER flashes for even 1 frame on Tab Switcher open!
             View newTabWrap = hubToolbar.findViewById(ID_HUB_NEW_TAB_BUTTON_WRAP);
             if (newTabWrap != null) {
-                newTabWrap.setBackgroundTintList(null);
+                if (newTabWrap.getBackgroundTintList() != null) newTabWrap.setBackgroundTintList(null);
                 if (newTabWrap.getBackground() != null) {
                     newTabWrap.setBackground(null);
                 }
@@ -839,51 +848,7 @@ public final class CouiBrowserUiEnhancer {
             };
             for (View btn : newTabBtns) {
                 if (btn == null) continue;
-                String btnTag = "coui_hub_add3_" + (isDark ? "d" : "l");
-                btn.setBackgroundTintList(null);
-                if (!btnTag.equals(btn.getTag())) {
-                    GradientDrawable gd = new GradientDrawable();
-                    gd.setShape(GradientDrawable.RECTANGLE);
-                    gd.setCornerRadius(dpF(activity, 14f));
-                    gd.setColor(isDark ? 0xFF1C1C1E : 0xFFFFFFFF);
-                    gd.setStroke(Math.max(1, dp(activity, 0.75f)), isDark ? 0x1AFFFFFF : 0x12000000);
-                    btn.setBackground(gd);
-                    btn.setTag(btnTag);
-                }
-                if (btn instanceof ImageView) {
-                    ImageView iv = (ImageView) btn;
-                    iv.clearColorFilter();
-                    iv.setImageTintList(null);
-                    Drawable curD = iv.getDrawable();
-                    if (curD instanceof CouiPlusIconDrawable) {
-                        ((CouiPlusIconDrawable) curD).setDarkMode(isDark);
-                    } else {
-                        iv.setImageDrawable(new CouiPlusIconDrawable(activity, isDark));
-                        iv.setScaleType(ImageView.ScaleType.CENTER);
-                    }
-                } else if (btn instanceof TextView) {
-                    TextView tv = (TextView) btn;
-                    tv.setTextColor(plusIconCol);
-                    tv.setCompoundDrawableTintList(plusIconCsl);
-                    Drawable[] cds = tv.getCompoundDrawables();
-                    if (cds != null) {
-                        for (Drawable d : cds) {
-                            if (d != null) {
-                                d.setTintList(plusIconCsl);
-                                d.setColorFilter(plusIconCol, PorterDuff.Mode.SRC_IN);
-                            }
-                        }
-                    }
-                    Drawable[] cdrs = tv.getCompoundDrawablesRelative();
-                    if (cdrs != null) {
-                        for (Drawable d : cdrs) {
-                            if (d != null) {
-                                d.setTintList(plusIconCsl);
-                                d.setColorFilter(plusIconCol, PorterDuff.Mode.SRC_IN);
-                            }
-                        }
-                    }
-                }
+                enforceHubNewTabButtonNeutral(activity, btn, isDark, plusIconCol, plusIconCsl);
             }
 
             // 2. Top-center '[count | grid]' pane switcher pill (0x7f010950 + 0x7f01094f TabLayout)
@@ -995,6 +960,172 @@ public final class CouiBrowserUiEnhancer {
                 }
             } else if (c instanceof ViewGroup && id != ID_TAB_LIST_RECYCLER_VIEW) {
                 hideHairlinesRecursive((ViewGroup) c);
+            }
+        }
+    }
+
+    /**
+     * Round 17: Tint-immune COUI 14dp squircle background for Tab Switcher's '+' New Tab button.
+     * Deliberately ignores setTint / setTintList / setColorFilter so Chromium's HubToolbarViewBinder
+     * cannot re-paint Material You slate-blue onto the button on any frame.
+     */
+    private static final class CouiHubNewTabBgDrawable extends Drawable {
+        private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF rf = new RectF();
+        private final float radiusPx;
+        private final float strokePx;
+        private boolean isDark;
+
+        CouiHubNewTabBgDrawable(Context ctx, boolean isDark) {
+            this.isDark = isDark;
+            this.radiusPx = dpF(ctx, 14f);
+            this.strokePx = Math.max(1f, dpF(ctx, 0.75f));
+            fillPaint.setStyle(Paint.Style.FILL);
+            strokePaint.setStyle(Paint.Style.STROKE);
+            strokePaint.setStrokeWidth(strokePx);
+        }
+
+        void setDarkMode(boolean dark) {
+            if (this.isDark != dark) {
+                this.isDark = dark;
+                invalidateSelf();
+            }
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            Rect b = getBounds();
+            if (b.width() <= 0 || b.height() <= 0) return;
+            float half = strokePx * 0.5f;
+            rf.set(b.left + half, b.top + half, b.right - half, b.bottom - half);
+            fillPaint.setColor(isDark ? 0xFF1C1C1E : 0xFFFFFFFF);
+            strokePaint.setColor(isDark ? 0x1AFFFFFF : 0x12000000);
+            canvas.drawRoundRect(rf, radiusPx, radiusPx, fillPaint);
+            canvas.drawRoundRect(rf, radiusPx, radiusPx, strokePaint);
+        }
+
+        @Override public void setAlpha(int alpha) {}
+        @Override public void setColorFilter(ColorFilter cf) {}
+        @Override public void setTint(int tintColor) {}
+        @Override public void setTintList(ColorStateList tint) {}
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+    }
+
+    private static void enforceHubNewTabButtonNeutral(
+            Activity activity, View btn, boolean isDark, int plusIconCol, ColorStateList plusIconCsl) {
+        if (btn == null) return;
+        if (btn.getBackgroundTintList() != null) {
+            btn.setBackgroundTintList(null);
+        }
+        Drawable curBg = btn.getBackground();
+        if (curBg instanceof CouiHubNewTabBgDrawable) {
+            ((CouiHubNewTabBgDrawable) curBg).setDarkMode(isDark);
+        } else {
+            btn.setBackground(new CouiHubNewTabBgDrawable(activity, isDark));
+        }
+        if (btn instanceof ImageView) {
+            ImageView iv = (ImageView) btn;
+            iv.clearColorFilter();
+            if (iv.getImageTintList() != null) iv.setImageTintList(null);
+            Drawable curD = iv.getDrawable();
+            if (curD instanceof CouiPlusIconDrawable) {
+                ((CouiPlusIconDrawable) curD).setDarkMode(isDark);
+            } else {
+                iv.setImageDrawable(new CouiPlusIconDrawable(activity, isDark));
+                iv.setScaleType(ImageView.ScaleType.CENTER);
+            }
+        } else if (btn instanceof TextView) {
+            TextView tv = (TextView) btn;
+            if (tv.getCurrentTextColor() != plusIconCol) tv.setTextColor(plusIconCol);
+            tv.setCompoundDrawableTintList(plusIconCsl);
+            Drawable[] cds = tv.getCompoundDrawables();
+            if (cds != null) {
+                for (Drawable d : cds) {
+                    if (d != null) {
+                        d.setTintList(plusIconCsl);
+                        d.setColorFilter(plusIconCol, PorterDuff.Mode.SRC_IN);
+                    }
+                }
+            }
+            Drawable[] cdrs = tv.getCompoundDrawablesRelative();
+            if (cdrs != null) {
+                for (Drawable d : cdrs) {
+                    if (d != null) {
+                        d.setTintList(plusIconCsl);
+                        d.setColorFilter(plusIconCol, PorterDuff.Mode.SRC_IN);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Round 17: Unthrottled O(1) pre-draw guard called on EVERY frame while Tab Switcher is visible.
+     * Eliminates the 2-3 frame (~85ms) Material You slate-blue flash on the '+' New Tab button and
+     * newly bound tab cards BEFORE ViewRootImpl.performDraw() rasterizes frame 0.
+     */
+    static void enforceTabSwitcherNoBlueFast(Activity activity, View tabHolder, boolean isDark) {
+        if (activity == null || tabHolder == null || tabHolder.getVisibility() != View.VISIBLE) return;
+        int wantBg = isDark ? 0xFF000000 : 0xFFF0F1F3;
+        Drawable thBg = tabHolder.getBackground();
+        if (!(thBg instanceof ColorDrawable) || ((ColorDrawable) thBg).getColor() != wantBg) {
+            tabHolder.setBackgroundColor(wantBg);
+        }
+        int sb = sTopInsetPx > 0 ? sTopInsetPx : systemStatusBarHeight(activity);
+        if (sb <= 0) sb = dp(activity, 36);
+        int wantTop = Math.round(sb * 1.30f);
+        if (tabHolder.getPaddingTop() != wantTop) {
+            tabHolder.setPadding(tabHolder.getPaddingLeft(), wantTop,
+                    tabHolder.getPaddingRight(), tabHolder.getPaddingBottom());
+            if (tabHolder instanceof ViewGroup) ((ViewGroup) tabHolder).setClipToPadding(false);
+        }
+        View hubToolbar = tabHolder.findViewById(ID_HUB_TOOLBAR);
+        if (hubToolbar != null) {
+            boolean needsFullStyle = false;
+            Drawable hbg = hubToolbar.getBackground();
+            if (!(hbg instanceof ColorDrawable) || ((ColorDrawable) hbg).getColor() != wantBg) {
+                needsFullStyle = true;
+            }
+            View wrap = hubToolbar.findViewById(ID_HUB_NEW_TAB_BUTTON_WRAP);
+            if (wrap != null && (wrap.getBackground() != null || wrap.getBackgroundTintList() != null)) {
+                wrap.setBackgroundTintList(null);
+                wrap.setBackground(null);
+            }
+            int plusIconCol = isDark ? 0xE6FFFFFF : 0xFF191919;
+            ColorStateList plusIconCsl = ColorStateList.valueOf(plusIconCol);
+            View b1 = hubToolbar.findViewById(ID_HUB_NEW_TAB_BUTTON);
+            View b2 = hubToolbar.findViewById(ID_HUB_NEW_TAB_TEXT_BTN);
+            if (b1 != null && (!(b1.getBackground() instanceof CouiHubNewTabBgDrawable) || b1.getBackgroundTintList() != null)) {
+                enforceHubNewTabButtonNeutral(activity, b1, isDark, plusIconCol, plusIconCsl);
+                needsFullStyle = true;
+            }
+            if (b2 != null && (!(b2.getBackground() instanceof CouiHubNewTabBgDrawable) || b2.getBackgroundTintList() != null)) {
+                enforceHubNewTabButtonNeutral(activity, b2, isDark, plusIconCol, plusIconCsl);
+                needsFullStyle = true;
+            }
+            if (needsFullStyle) {
+                styleTabSwitcherColors(activity, tabHolder, isDark);
+                return;
+            }
+        }
+        // Check visible tab cards for any freshly bound Material You blue backgroundTintList
+        View tabRv = tabHolder.findViewById(ID_TAB_LIST_RECYCLER_VIEW);
+        if (tabRv instanceof ViewGroup) {
+            ViewGroup rvg = (ViewGroup) tabRv;
+            int n = rvg.getChildCount();
+            for (int i = 0; i < n; i++) {
+                View item = rvg.getChildAt(i);
+                if (item == null || item.getVisibility() != View.VISIBLE) continue;
+                View card = item.findViewById(ID_TAB_CARD_VIEW);
+                if (card != null) {
+                    ColorStateList cur = card.getBackgroundTintList();
+                    boolean isOurs = (cur == CSL_TAB_LIGHT_UNFOCUSED || cur == CSL_TAB_LIGHT_FOCUSED
+                            || cur == CSL_TAB_DARK_UNFOCUSED || cur == CSL_TAB_DARK_FOCUSED);
+                    if (!isOurs) {
+                        styleTabGridCardItem(item, isDark);
+                    }
+                }
             }
         }
     }
@@ -1235,13 +1366,20 @@ public final class CouiBrowserUiEnhancer {
             if (logoView != null && logoView.getVisibility() != View.GONE) logoView.setVisibility(View.GONE);
             View logoStub = ntpContent.findViewById(ID_NTP_LOGO_STUB);
             if (logoStub != null && logoStub.getVisibility() != View.GONE) logoStub.setVisibility(View.GONE);
+            View customizeBtn = ntpContent.findViewById(ID_CUSTOMIZE_BUTTON);
+            if (customizeBtn != null && customizeBtn.getVisibility() != View.GONE) customizeBtn.setVisibility(View.GONE);
             if (ntpContent.getPaddingTop() != 0) {
                 ntpContent.setPadding(ntpContent.getPaddingLeft(), 0,
                         ntpContent.getPaddingRight(), ntpContent.getPaddingBottom());
             }
         }
+        View rootCustomizeBtn = root.findViewById(ID_CUSTOMIZE_BUTTON);
+        if (rootCustomizeBtn != null && rootCustomizeBtn.getVisibility() != View.GONE) {
+            rootCustomizeBtn.setVisibility(View.GONE);
+        }
 
         // 2. Inject / sync horizontally centered h1-scale "Search" display heading directly above NTP search box
+        //    Round 17: Enlarged by ~40% (36sp -> 50sp) with balanced hero spacing above the 44dp search capsule.
         View searchBox = ntpContent != null ? ntpContent.findViewById(ID_SEARCH_BOX) : root.findViewById(ID_SEARCH_BOX);
         View searchBoxBg = ntpContent != null ? ntpContent.findViewById(ID_NTP_SEARCH_BOX_BG) : root.findViewById(ID_NTP_SEARCH_BOX_BG);
         View searchBoxCont = ntpContent != null ? ntpContent.findViewById(ID_NTP_SEARCH_BOX_CONTAINER) : root.findViewById(ID_NTP_SEARCH_BOX_CONTAINER);
@@ -1252,8 +1390,8 @@ public final class CouiBrowserUiEnhancer {
             View existingHeading = ntpLinear.findViewWithTag(NTP_SEARCH_HEADING_TAG);
             TextView headingTv;
             int sbH = getStatusBarHeight(activity);
-            int wantTopMargin = sbH + dp(activity, 58);
-            int wantBotMargin = dp(activity, 22);
+            int wantTopMargin = sbH + dp(activity, 52);
+            int wantBotMargin = dp(activity, 26);
             if (existingHeading instanceof TextView) {
                 headingTv = (TextView) existingHeading;
             } else {
@@ -1261,7 +1399,8 @@ public final class CouiBrowserUiEnhancer {
                 headingTv.setTag(NTP_SEARCH_HEADING_TAG);
                 headingTv.setText("Search");
                 headingTv.setGravity(Gravity.CENTER);
-                headingTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 36f);
+                headingTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 50f);
+                headingTv.setLetterSpacing(-0.02f);
                 headingTv.setIncludeFontPadding(false);
                 if (Build.VERSION.SDK_INT >= 28) {
                     headingTv.setTypeface(Typeface.create(Typeface.SANS_SERIF, 650, false));
@@ -1285,6 +1424,11 @@ public final class CouiBrowserUiEnhancer {
                 hlp.leftMargin = dp(activity, 16);
                 hlp.rightMargin = dp(activity, 16);
                 ntpLinear.addView(headingTv, insertIdx, hlp);
+            }
+            float wantTextPx = TypedValue.applyDimension(
+                    TypedValue.COMPLEX_UNIT_SP, 50f, activity.getResources().getDisplayMetrics());
+            if (Math.abs(headingTv.getTextSize() - wantTextPx) > 1f) {
+                headingTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 50f);
             }
             if (headingTv.getCurrentTextColor() != titleCol) {
                 headingTv.setTextColor(titleCol);
@@ -2893,6 +3037,11 @@ public final class CouiBrowserUiEnhancer {
         if (searchQuery != null && searchQuery.getVisibility() == View.VISIBLE) {
             return false;
         }
+        // Round 17: Fast, exact MultiColumnSettings SlidingPaneLayout check (SettingsActivity.t0)
+        Boolean paneOpen = isSettingsSlidingPaneOpen(activity);
+        if (paneOpen != null) {
+            return !paneOpen;
+        }
         try {
             Method getFm = activity.getClass().getMethod("J0");
             Object fm = getFm.invoke(activity);
@@ -2988,7 +3137,7 @@ public final class CouiBrowserUiEnhancer {
             }
         }
         if (bestBottom > 0) return bestBottom;
-        return dp(activity, isRootSettingsScreen(activity) ? 186 : 132);
+        return dp(activity, isRootSettingsScreen(activity) ? 202 : 132);
     }
 
     /**
@@ -3067,11 +3216,15 @@ public final class CouiBrowserUiEnhancer {
                 } else {
                     largeTv.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
                 }
-                largeTv.setPadding(dp(activity, 18), dp(activity, 6), dp(activity, 18), dp(activity, 14));
+                largeTv.setPadding(dp(activity, 18), dp(activity, 22), dp(activity, 18), dp(activity, 14));
                 LinearLayout.LayoutParams ltp = new LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
                 int insertAt = Math.min(1, appBar.getChildCount());
                 appBar.addView(largeTv, insertAt, ltp);
+            }
+            int wantLargeTop = dp(activity, 22);
+            if (largeTv.getPaddingTop() != wantLargeTop) {
+                largeTv.setPadding(dp(activity, 18), wantLargeTop, dp(activity, 18), dp(activity, 14));
             }
             CharSequence wantLabel = (currentTitle != null && currentTitle.length() > 0) ? currentTitle : "Settings";
             if (!wantLabel.equals(largeTv.getText())) {
@@ -3546,7 +3699,7 @@ public final class CouiBrowserUiEnhancer {
                 || Math.abs(oldTop - topPad) > dp(ctx, 2)
                 || rv.getPaddingBottom() < botPad) {
             rv.setPadding(0, topPad, 0, botPad);
-            if (topPad > oldTop && (atTopBefore || oldTop < dp(ctx, 150))) {
+            if (topPad > oldTop && (atTopBefore || oldTop < dp(ctx, 220))) {
                 try {
                     rv.scrollBy(0, -(topPad - oldTop));
                 } catch (Throwable ignored) {}
@@ -4744,7 +4897,7 @@ public final class CouiBrowserUiEnhancer {
         private final ViewTreeObserver.OnPreDrawListener preDrawListener = new ViewTreeObserver.OnPreDrawListener() {
             @Override
             public boolean onPreDraw() {
-                if (!isRecording && isShown() && getWidth() > 0 && getHeight() > 0) {
+                if (!sSettingsSlideActive && !isRecording && isShown() && getWidth() > 0 && getHeight() > 0) {
                     recordBackdrop();
                 }
                 return true;
@@ -4936,6 +5089,709 @@ public final class CouiBrowserUiEnhancer {
             addPref.invoke(parentGroup, repoPref);
         } catch (Throwable t) {
             Log.w(TAG, "onAboutSettingsCreated failed", t);
+        }
+    }
+
+    // =========================================================================
+    // ROUND 17 METHOD 1: Full-Screen ColorOS 17 Settings Page Slide Transitions
+    // =========================================================================
+
+    private static void initFragmentManagerReflect(Object fm) {
+        if (sFmReflectInit || fm == null) return;
+        sFmReflectInit = true;
+        try {
+            sFmHostField = fm.getClass().getDeclaredField("x");
+            sFmHostField.setAccessible(true);
+        } catch (Throwable ignored) {}
+        try {
+            sFmBackStackCountMethod = fm.getClass().getMethod("L");
+        } catch (Throwable ignored) {}
+    }
+
+    private static Activity resolveSettingsActivityFromFm(Object fm) {
+        if (fm == null) return null;
+        try {
+            initFragmentManagerReflect(fm);
+            if (sFmHostField == null) return null;
+            Object host = sFmHostField.get(fm);
+            if (host == null) return null;
+            if (sHostActivityField == null) {
+                try {
+                    sHostActivityField = host.getClass().getDeclaredField("r");
+                    sHostActivityField.setAccessible(true);
+                } catch (Throwable ignored) {
+                    return null;
+                }
+            }
+            Object actObj = sHostActivityField.get(host);
+            if (actObj instanceof Activity
+                    && actObj.getClass().getName().endsWith(".SettingsActivity")) {
+                return (Activity) actObj;
+            }
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    private static int getSettingsBackStackCount(Activity activity) {
+        if (activity == null) return 0;
+        try {
+            Method getFm = activity.getClass().getMethod("J0");
+            Object fm = getFm.invoke(activity);
+            if (fm != null) {
+                initFragmentManagerReflect(fm);
+                if (sFmBackStackCountMethod != null) {
+                    return (Integer) sFmBackStackCountMethod.invoke(fm);
+                }
+            }
+        } catch (Throwable ignored) {}
+        return 0;
+    }
+
+    private static Object getSettingsTopFragment(Activity activity) {
+        if (activity == null) return null;
+        try {
+            Method m = activity.getClass().getMethod("M");
+            return m.invoke(activity);
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    private static Object getSettingsMultiColumn(Activity activity) {
+        if (activity == null) return null;
+        try {
+            Method m = activity.getClass().getMethod("d");
+            return m.invoke(activity);
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    private static int getSettingsEffectiveBackStackCount(Activity activity) {
+        if (activity == null) return 0;
+        try {
+            Object mcs = getSettingsMultiColumn(activity);
+            if (mcs != null) {
+                Method getChildFm = mcs.getClass().getMethod("A0");
+                Object cfm = getChildFm.invoke(mcs);
+                if (cfm != null) {
+                    initFragmentManagerReflect(cfm);
+                    if (sFmBackStackCountMethod != null) {
+                        return (Integer) sFmBackStackCountMethod.invoke(cfm);
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+        return getSettingsBackStackCount(activity);
+    }
+
+    /**
+     * Returns Boolean.TRUE if MultiColumnSettings SlidingPaneLayout (Ljqe) is currently showing the
+     * detail sub-page (Ljqe.l() == true), Boolean.FALSE if closed on root MainSettings, or null if
+     * SettingsActivity is in non-MultiColumn mode or pane isn't laid out yet.
+     */
+    private static Boolean isSettingsSlidingPaneOpen(Activity activity) {
+        if (activity == null) return null;
+        try {
+            Object mcs = getSettingsMultiColumn(activity);
+            if (mcs == null) return null;
+            Method getView = mcs.getClass().getMethod("u1");
+            Object pane = getView.invoke(mcs);
+            if (pane instanceof View) {
+                Method isOpenM = pane.getClass().getMethod("l");
+                Object res = isOpenM.invoke(pane);
+                if (res instanceof Boolean) {
+                    return (Boolean) res;
+                }
+            }
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    private static CharSequence getSettingsToolbarTitle(Activity activity) {
+        if (activity == null) return "";
+        View tb = activity.findViewById(ID_SETTINGS_TOOLBAR);
+        if (tb instanceof ViewGroup) {
+            ViewGroup tbg = (ViewGroup) tb;
+            for (int i = 0; i < tbg.getChildCount(); i++) {
+                View c = tbg.getChildAt(i);
+                if (c instanceof TextView && !(c instanceof EditText)) {
+                    CharSequence t = ((TextView) c).getText();
+                    if (t != null) return t;
+                }
+            }
+        }
+        return "";
+    }
+
+    /** Smali hook (Ljqe.n openPane & Ljqe.c closePane): capture full-screen snapshot BEFORE SlidingPaneLayout moves. */
+    public static void onSlidingPaneBeforeSlide(View slidingPane, boolean isOpenForward) {
+        if (slidingPane == null) return;
+        try {
+            Activity act = unwrapActivity(slidingPane.getContext());
+            if (act == null || !act.getClass().getName().endsWith(".SettingsActivity")) return;
+            // Only animate when the pane is actually laid out and changing state!
+            if (!slidingPane.isLaidOut() || slidingPane.getWidth() <= 0) return;
+            Method isOpenM = slidingPane.getClass().getMethod("l");
+            boolean currentlyOpen = Boolean.TRUE.equals(isOpenM.invoke(slidingPane));
+            if (isOpenForward && currentlyOpen) return;
+            if (!isOpenForward && !currentlyOpen) return;
+            CouiSettingsPageSlideController ctrl = getOrCreateSlideController(act);
+            ctrl.beginTransition(isOpenForward);
+        } catch (Throwable t) {
+            Log.w(TAG, "onSlidingPaneBeforeSlide failed", t);
+        }
+    }
+
+    /**
+     * Smali hook (Ljqe.s smoothSlideTo): snaps SlidingPaneLayout's detail pane to targetLeft INSTANTLY
+     * inside SettingsActivity (zero ViewDragHelper partial-pane slide underneath AppBarLayout!) so our
+     * Method 1 full-screen ColorOS 17 slide owns 100% of the visual motion.
+     */
+    public static boolean trySnapSlidingPaneImmediate(View slidingPane, Object dragHelper, int targetLeft) {
+        if (slidingPane == null || dragHelper == null) return false;
+        try {
+            Activity act = unwrapActivity(slidingPane.getContext());
+            if (act == null || !act.getClass().getName().endsWith(".SettingsActivity")) return false;
+            Field fCaptured = dragHelper.getClass().getDeclaredField("t");
+            fCaptured.setAccessible(true);
+            Object capObj = fCaptured.get(dragHelper);
+            if (!(capObj instanceof View)) return false;
+            View slideable = (View) capObj;
+
+            if (slidingPane instanceof ViewGroup) {
+                ViewGroup vg = (ViewGroup) slidingPane;
+                for (int i = 0; i < vg.getChildCount(); i++) {
+                    View child = vg.getChildAt(i);
+                    if (child.getVisibility() == View.INVISIBLE) {
+                        child.setVisibility(View.VISIBLE);
+                    }
+                }
+            }
+            int dx = targetLeft - slideable.getLeft();
+            if (dx != 0) {
+                slideable.offsetLeftAndRight(dx);
+            }
+            Method abortM = dragHelper.getClass().getMethod("a");
+            abortM.invoke(dragHelper);
+            slidingPane.invalidate();
+            return true;
+        } catch (Throwable t) {
+            Log.w(TAG, "trySnapSlidingPaneImmediate failed", t);
+            return false;
+        }
+    }
+
+    /** Smali hook (MultiColumnSettings.Q1 & Lr4c.u nested detail push): snapshot before nested sub-page commit. */
+    public static void onMultiColumnSettingsBeforePush(Object frag) {
+        if (frag == null) return;
+        try {
+            Method getCtx = frag.getClass().getMethod("B0");
+            Object ctxObj = getCtx.invoke(frag);
+            if (!(ctxObj instanceof Context)) return;
+            Activity act = unwrapActivity((Context) ctxObj);
+            if (act == null || !act.getClass().getName().endsWith(".SettingsActivity")) return;
+            onSettingsBeforeForwardPush(act);
+        } catch (Throwable t) {
+            Log.w(TAG, "onMultiColumnSettingsBeforePush failed", t);
+        }
+    }
+
+    /** Smali hook (Lo96.h): bypass half-screen FragmentManager predictive back inside SettingsActivity. */
+    public static boolean shouldBypassFragmentPredictiveBack(Object fm) {
+        return resolveSettingsActivityFromFm(fm) != null;
+    }
+
+    /** Smali hook (Lo96.f): capture outgoing sub-settings full-screen snapshot before system-back pop. */
+    public static void onFragmentManagerBeforeBackPop(Object fm) {
+        try {
+            Activity act = resolveSettingsActivityFromFm(fm);
+            if (act == null) return;
+            if (sFmBackStackCountMethod != null) {
+                int bs = (Integer) sFmBackStackCountMethod.invoke(fm);
+                if (bs <= 0) return;
+            }
+            onSettingsBeforeBackwardPop(act);
+        } catch (Throwable t) {
+            Log.w(TAG, "onFragmentManagerBeforeBackPop failed", t);
+        }
+    }
+
+    /** Smali hook (SettingsActivity.onResume before Lk01.f forward push). */
+    public static void onSettingsBeforeForwardPush(Activity activity) {
+        if (activity == null) return;
+        try {
+            CouiSettingsPageSlideController ctrl = getOrCreateSlideController(activity);
+            ctrl.beginTransition(true);
+        } catch (Throwable t) {
+            Log.w(TAG, "onSettingsBeforeForwardPush failed", t);
+        }
+    }
+
+    /** Smali hook (SettingsActivity.e before Lda6.X backward pop & Lo96.f system back pop). */
+    public static void onSettingsBeforeBackwardPop(Activity activity) {
+        if (activity == null) return;
+        try {
+            CouiSettingsPageSlideController ctrl = getOrCreateSlideController(activity);
+            ctrl.beginTransition(false);
+        } catch (Throwable t) {
+            Log.w(TAG, "onSettingsBeforeBackwardPop failed", t);
+        }
+    }
+
+    /** Smali hook (SettingsActivity.onDestroy): release any active slide bitmaps/overlays cleanly. */
+    public static void onSettingsDestroyed(Activity activity) {
+        if (activity == null) return;
+        try {
+            CouiSettingsPageSlideController ctrl = sSettingsSlideControllers.remove(activity);
+            if (ctrl != null) {
+                ctrl.cancelImmediate();
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static CouiSettingsPageSlideController getOrCreateSlideController(Activity activity) {
+        CouiSettingsPageSlideController ctrl = sSettingsSlideControllers.get(activity);
+        if (ctrl == null) {
+            ctrl = new CouiSettingsPageSlideController(activity);
+            sSettingsSlideControllers.put(activity, ctrl);
+        }
+        return ctrl;
+    }
+
+    /**
+     * Method 1 Full-Screen ColorOS 17 Settings Page Slide Controller (screen-slide.mp4 1:1):
+     * - Captures a full 1:1 bitmap snapshot of the entire outgoing screen (id/settings_activity,
+     *   including AppBarLayout, lowered "Settings" / inline "<- Title", persistent "Search" capsule,
+     *   and cards) BEFORE Chromium swaps the underlying fragment.
+     * - Covers the activity with the frozen snapshot while Chromium commits the fragment and
+     *   syncSettingsHeaderAndSearch() + styleSettingsTree() complete layout (1-2 vsyncs, zero snap/flicker).
+     * - Runs a 120Hz hardware-accelerated 340ms PathInterpolator(0.20, 0.0, 0.0, 1.0) full-screen slide:
+     *   * Forward push: incoming live screen slides +100% -> 0% with 20dp left-edge shadow over outgoing
+     *     snapshot parallaxing 0% -> -22% with 0% -> 10% black dimming scrim.
+     *   * Backward pop: outgoing sub-page snapshot slides 0% -> +100% with left-edge shadow over incoming
+     *     live parent screen parallaxing -22% -> 0% as scrim clears 10% -> 0%.
+     */
+    private static final class CouiSettingsPageSlideController {
+        private static final long SLIDE_DURATION_MS = 340L;
+        private static final float PARALLAX_FRACTION = 0.22f;
+        private static final float MAX_SCRIM_ALPHA = 0.10f;
+        private static final Interpolator COS17_SLIDE_INTERP = new PathInterpolator(0.20f, 0.0f, 0.0f, 1.0f);
+
+        private final Activity activity;
+        private ViewGroup host;
+        private View rootCoord;
+        private Bitmap outgoingBmp;
+        private CouiSlideSnapshotView stageView;
+        private View scrimView;
+        private CouiSlideEdgeShadowView edgeShadowView;
+        private ValueAnimator animator;
+        private ViewTreeObserver.OnPreDrawListener readyPreDraw;
+        private Runnable safetyTimeoutRunnable;
+        private boolean isForward = true;
+        private int prevBackStack = 0;
+        private Object prevTopFrag = null;
+        private Boolean prevPaneOpen = null;
+        private String prevTitle = "";
+        private long beginUptimeMs = 0L;
+        private int settleStep = 0; // 0=waiting fragment/pane swap, 1=waiting header layout, 2=waiting list padding layout
+        private boolean waitingForCommit = false;
+        private int origRootLayerType = View.LAYER_TYPE_NONE;
+
+        CouiSettingsPageSlideController(Activity activity) {
+            this.activity = activity;
+        }
+
+        void beginTransition(boolean forward) {
+            // If we already captured the outgoing snapshot for this exact navigation gesture (e.g.
+            // MultiColumnSettings.Q1 + Ljqe.n both firing in the same call), keep the first clean snapshot!
+            if (waitingForCommit && this.isForward == forward
+                    && (SystemClock.uptimeMillis() - beginUptimeMs) < 120L) {
+                return;
+            }
+            // Skip horizontal page slide if active Settings search query bar is open
+            View searchQuery = activity.findViewById(ID_SEARCH_QUERY_CONTAINER);
+            if (searchQuery != null && searchQuery.getVisibility() == View.VISIBLE) {
+                return;
+            }
+            View coord = activity.findViewById(ID_SETTINGS_ACTIVITY);
+            if (coord == null || !coord.isAttachedToWindow()) return;
+            int w = coord.getWidth();
+            int h = coord.getHeight();
+            if (w <= 0 || h <= 0) return;
+
+            ViewParent p = coord.getParent();
+            if (!(p instanceof FrameLayout)) return;
+            FrameLayout parentHost = (FrameLayout) p;
+
+            // If an earlier slide is mid-flight (rapid double-tap), finish it cleanly before snapshotting
+            cancelImmediate();
+
+            // Capture full 1:1 outgoing screen bitmap (AppBarLayout + lowered/inline title + Search pill + cards)
+            Bitmap bmp;
+            try {
+                bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                Canvas c = new Canvas(bmp);
+                boolean dark = isDarkMode(activity);
+                c.drawColor(dark ? 0xFF000000 : 0xFFF0F1F3);
+                coord.draw(c);
+            } catch (Throwable t) {
+                Log.w(TAG, "Slide snapshot capture failed", t);
+                return;
+            }
+
+            this.host = parentHost;
+            this.rootCoord = coord;
+            this.outgoingBmp = bmp;
+            this.isForward = forward;
+            this.prevBackStack = getSettingsEffectiveBackStackCount(activity);
+            this.prevTopFrag = getSettingsTopFragment(activity);
+            this.prevPaneOpen = isSettingsSlidingPaneOpen(activity);
+            CharSequence pt = getSettingsToolbarTitle(activity);
+            this.prevTitle = (pt != null) ? pt.toString() : "";
+            this.beginUptimeMs = SystemClock.uptimeMillis();
+            this.settleStep = 0;
+            this.waitingForCommit = true;
+            sSettingsSlideActive = true;
+
+            // Place frozen outgoing snapshot directly ON TOP of rootCoord so the user sees ZERO flicker
+            // while FragmentManager/SlidingPaneLayout swaps the screen and AppBarLayout/RecyclerView settle.
+            stageView = new CouiSlideSnapshotView(activity, bmp, isDarkMode(activity));
+            stageView.setTag(SETTINGS_SLIDE_STAGE_TAG);
+            FrameLayout.LayoutParams slp = new FrameLayout.LayoutParams(w, h);
+            slp.leftMargin = coord.getLeft();
+            slp.topMargin = coord.getTop();
+            parentHost.addView(stageView, slp);
+            stageView.bringToFront();
+
+            readyPreDraw = new ViewTreeObserver.OnPreDrawListener() {
+                @Override
+                public boolean onPreDraw() {
+                    if (!waitingForCommit || rootCoord == null || host == null) {
+                        removeReadyPreDraw();
+                        return true;
+                    }
+                    int curBs = getSettingsEffectiveBackStackCount(activity);
+                    Object curTop = getSettingsTopFragment(activity);
+                    Boolean curPane = isSettingsSlidingPaneOpen(activity);
+                    CharSequence ct = getSettingsToolbarTitle(activity);
+                    String curTitle = (ct != null) ? ct.toString() : "";
+                    long elapsed = SystemClock.uptimeMillis() - beginUptimeMs;
+
+                    boolean readyToStyle;
+                    if (isForward) {
+                        // On forward push into MultiColumnSettings detail pane, wait until the NEW detail
+                        // fragment instance has actually replaced prevTopFrag (preventing stale previous title!).
+                        boolean fragReplaced = (curTop != null && curTop != prevTopFrag);
+                        boolean paneOpened = (Boolean.FALSE.equals(prevPaneOpen) && Boolean.TRUE.equals(curPane));
+                        boolean bsGrew = (curBs > prevBackStack);
+                        boolean titleUpdated = (!curTitle.isEmpty() && !"Settings".equals(curTitle) && !curTitle.equals(prevTitle));
+                        readyToStyle = fragReplaced || bsGrew || (paneOpened && (titleUpdated || elapsed >= 65L));
+                    } else {
+                        boolean paneClosed = (Boolean.TRUE.equals(prevPaneOpen) && Boolean.FALSE.equals(curPane));
+                        boolean bsShrank = (curBs < prevBackStack);
+                        boolean fragReplaced = (curTop != prevTopFrag);
+                        readyToStyle = paneClosed || bsShrank || fragReplaced;
+                    }
+                    if (!readyToStyle) {
+                        return true;
+                    }
+                    boolean dark = isDarkMode(activity);
+                    int canvasColor = dark ? 0xFF000000 : 0xFFF0F1F3;
+                    View fragContent = activity.findViewById(ID_SETTINGS_CONTENT);
+                    if (settleStep == 0) {
+                        // Pass 1: Screen swapped -> immediately switch header (large "Settings" vs inline "<- Title")
+                        syncSettingsHeaderAndSearch(activity, dark);
+                        if (fragContent != null) {
+                            styleSettingsTree(activity, fragContent, dark, canvasColor);
+                        }
+                        View blur = rootCoord.findViewWithTag(SETTINGS_TOP_BLUR_TAG);
+                        if (blur instanceof CouiTopProgressiveBlurView) {
+                            ((CouiTopProgressiveBlurView) blur).syncHeight();
+                        }
+                        settleStep = 1;
+                        rootCoord.requestLayout();
+                        return false; // Hold draw for 1 layout pass while AppBarLayout resolves its exact bottom
+                    } else if (settleStep == 1) {
+                        // Pass 2: AppBarLayout now measured -> lock exact RecyclerView/ListView topPad + card styles
+                        syncSettingsHeaderAndSearch(activity, dark);
+                        if (fragContent != null) {
+                            styleSettingsTree(activity, fragContent, dark, canvasColor);
+                        }
+                        View blur = rootCoord.findViewWithTag(SETTINGS_TOP_BLUR_TAG);
+                        if (blur instanceof CouiTopProgressiveBlurView) {
+                            ((CouiTopProgressiveBlurView) blur).syncHeight();
+                        }
+                        settleStep = 2;
+                        if (fragContent != null && fragContent.isLayoutRequested()) {
+                            return false;
+                        }
+                    }
+                    // Ready! Incoming screen has final header, final Search pill, and final card insets.
+                    waitingForCommit = false;
+                    removeReadyPreDraw();
+                    startSlideAnimation();
+                    return true;
+                }
+            };
+            parentHost.getViewTreeObserver().addOnPreDrawListener(readyPreDraw);
+
+            safetyTimeoutRunnable = new Runnable() {
+                @Override
+                public void run() {
+                    if (waitingForCommit) {
+                        // Fragment never changed (e.g. cancelled pop); clean up without sticking
+                        cancelImmediate();
+                    }
+                }
+            };
+            parentHost.postDelayed(safetyTimeoutRunnable, 220L);
+        }
+
+        private void removeReadyPreDraw() {
+            if (readyPreDraw != null && host != null) {
+                try {
+                    host.getViewTreeObserver().removeOnPreDrawListener(readyPreDraw);
+                } catch (Throwable ignored) {}
+            }
+            readyPreDraw = null;
+            if (safetyTimeoutRunnable != null && host != null) {
+                host.removeCallbacks(safetyTimeoutRunnable);
+            }
+            safetyTimeoutRunnable = null;
+        }
+
+        private void startSlideAnimation() {
+            if (host == null || rootCoord == null || stageView == null || outgoingBmp == null) {
+                cancelImmediate();
+                return;
+            }
+            final int w = rootCoord.getWidth();
+            final int h = rootCoord.getHeight();
+            if (w <= 0 || h <= 0) {
+                cancelImmediate();
+                return;
+            }
+            final int leftMargin = rootCoord.getLeft();
+            final int topMargin = rootCoord.getTop();
+            final float shadowW = dpF(activity, 20f);
+
+            origRootLayerType = rootCoord.getLayerType();
+            rootCoord.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+
+            if (isForward) {
+                // FORWARD PUSH:
+                //   Bottom layer: stageView (outgoing snapshot parallaxing 0 -> -22%W + darkening scrim 0 -> 10%)
+                //   Top layer:    live rootCoord (sliding +100%W -> 0) + 20dp left-edge shadow strip
+                int rootIdx = host.indexOfChild(rootCoord);
+                host.removeView(stageView);
+                FrameLayout.LayoutParams slp = new FrameLayout.LayoutParams(w, h);
+                slp.leftMargin = leftMargin;
+                slp.topMargin = topMargin;
+                host.addView(stageView, Math.max(0, rootIdx), slp);
+
+                edgeShadowView = new CouiSlideEdgeShadowView(activity);
+                FrameLayout.LayoutParams shLp = new FrameLayout.LayoutParams(Math.round(shadowW), h);
+                shLp.leftMargin = leftMargin;
+                shLp.topMargin = topMargin;
+                host.addView(edgeShadowView, shLp);
+                edgeShadowView.bringToFront();
+
+                rootCoord.setTranslationX(w);
+                edgeShadowView.setTranslationX(w - shadowW);
+                stageView.setRenderState(0f, 0f, false);
+            } else {
+                // BACKWARD POP:
+                //   Bottom layer: live rootCoord (incoming parent parallaxing -22%W -> 0)
+                //   Middle layer: scrimView (darkening scrim 10% -> 0% over parent)
+                //   Top layer:    stageView (outgoing sub-page snapshot sliding 0 -> +100%W with left-edge shadow)
+                scrimView = new View(activity);
+                scrimView.setBackgroundColor(0xFF000000);
+                scrimView.setAlpha(MAX_SCRIM_ALPHA);
+                scrimView.setClickable(false);
+                scrimView.setFocusable(false);
+                FrameLayout.LayoutParams scLp = new FrameLayout.LayoutParams(w, h);
+                scLp.leftMargin = leftMargin;
+                scLp.topMargin = topMargin;
+                int stageIdx = host.indexOfChild(stageView);
+                host.addView(scrimView, Math.max(0, stageIdx), scLp);
+                stageView.bringToFront();
+
+                rootCoord.setTranslationX(-w * PARALLAX_FRACTION);
+                stageView.setRenderState(0f, 0f, true);
+            }
+
+            animator = ValueAnimator.ofFloat(0f, 1f);
+            animator.setDuration(SLIDE_DURATION_MS);
+            animator.setInterpolator(COS17_SLIDE_INTERP);
+            animator.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+                @Override
+                public void onAnimationUpdate(ValueAnimator anim) {
+                    if (rootCoord == null || stageView == null) return;
+                    float p = (Float) anim.getAnimatedValue();
+                    if (isForward) {
+                        float inX = (1f - p) * w;
+                        rootCoord.setTranslationX(inX);
+                        if (edgeShadowView != null) {
+                            edgeShadowView.setTranslationX(inX - shadowW);
+                            edgeShadowView.setAlpha(1f - p);
+                        }
+                        stageView.setRenderState(-w * PARALLAX_FRACTION * p, MAX_SCRIM_ALPHA * p, false);
+                    } else {
+                        float outX = p * w;
+                        rootCoord.setTranslationX(-w * PARALLAX_FRACTION * (1f - p));
+                        if (scrimView != null) {
+                            scrimView.setAlpha(MAX_SCRIM_ALPHA * (1f - p));
+                        }
+                        stageView.setRenderState(outX, 0f, true);
+                    }
+                }
+            });
+            animator.addListener(new AnimatorListenerAdapter() {
+                @Override
+                public void onAnimationEnd(Animator animation) {
+                    finishCleanup();
+                }
+
+                @Override
+                public void onAnimationCancel(Animator animation) {
+                    finishCleanup();
+                }
+            });
+            animator.start();
+        }
+
+        void cancelImmediate() {
+            waitingForCommit = false;
+            removeReadyPreDraw();
+            if (animator != null) {
+                ValueAnimator a = animator;
+                animator = null;
+                a.cancel();
+            }
+            finishCleanup();
+        }
+
+        private void finishCleanup() {
+            waitingForCommit = false;
+            removeReadyPreDraw();
+            animator = null;
+            sSettingsSlideActive = false;
+            if (rootCoord != null) {
+                rootCoord.setTranslationX(0f);
+                rootCoord.setLayerType(origRootLayerType, null);
+                View blur = rootCoord.findViewWithTag(SETTINGS_TOP_BLUR_TAG);
+                if (blur instanceof CouiTopProgressiveBlurView) {
+                    ((CouiTopProgressiveBlurView) blur).syncHeight();
+                    blur.invalidate();
+                }
+            }
+            if (host != null) {
+                if (stageView != null) host.removeView(stageView);
+                if (scrimView != null) host.removeView(scrimView);
+                if (edgeShadowView != null) host.removeView(edgeShadowView);
+            }
+            stageView = null;
+            scrimView = null;
+            edgeShadowView = null;
+            if (outgoingBmp != null) {
+                if (!outgoingBmp.isRecycled()) {
+                    outgoingBmp.recycle();
+                }
+                outgoingBmp = null;
+            }
+            rootCoord = null;
+            host = null;
+        }
+    }
+
+    /** Hardware-drawn snapshot sheet for Method 1 full-screen Settings slide (supports parallax, scrim & edge shadow). */
+    private static final class CouiSlideSnapshotView extends View {
+        private final Bitmap bmp;
+        private final int canvasBg;
+        private final float shadowW;
+        private final Paint bmpPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+        private final Paint scrimPaint = new Paint();
+        private final Paint shadowPaint = new Paint();
+        private float offsetX = 0f;
+        private float scrimAlpha = 0f;
+        private boolean drawLeftShadow = false;
+        private LinearGradient cachedShadowGrad;
+
+        CouiSlideSnapshotView(Context ctx, Bitmap bmp, boolean isDark) {
+            super(ctx);
+            this.bmp = bmp;
+            this.canvasBg = isDark ? 0xFF000000 : 0xFFF0F1F3;
+            this.shadowW = dpF(ctx, 20f);
+            setClickable(false);
+            setFocusable(false);
+        }
+
+        void setRenderState(float offsetX, float scrimAlpha, boolean drawLeftShadow) {
+            this.offsetX = offsetX;
+            this.scrimAlpha = scrimAlpha;
+            this.drawLeftShadow = drawLeftShadow;
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            if (bmp == null || bmp.isRecycled()) return;
+            int w = getWidth();
+            int h = getHeight();
+            if (w <= 0 || h <= 0) return;
+
+            if (!drawLeftShadow) {
+                // Backdrop (outgoing screen during forward push): fill canvas edge so parallax gap never flashes
+                canvas.drawColor(canvasBg);
+            }
+            if (drawLeftShadow && offsetX > 0.5f && offsetX < w) {
+                if (cachedShadowGrad == null) {
+                    cachedShadowGrad = new LinearGradient(
+                            0f, 0f, shadowW, 0f,
+                            new int[]{0x00000000, 0x0B000000, 0x22000000},
+                            new float[]{0f, 0.55f, 1f},
+                            Shader.TileMode.CLAMP);
+                    shadowPaint.setShader(cachedShadowGrad);
+                }
+                float fade = Math.max(0f, Math.min(1f, 1f - (offsetX / w)));
+                shadowPaint.setAlpha(Math.round(255f * fade));
+                int save = canvas.save();
+                canvas.translate(offsetX - shadowW, 0f);
+                canvas.drawRect(0f, 0f, shadowW, h, shadowPaint);
+                canvas.restoreToCount(save);
+            }
+            canvas.drawBitmap(bmp, offsetX, 0f, bmpPaint);
+            if (scrimAlpha > 0.002f) {
+                scrimPaint.setColor(Color.argb(Math.round(255f * scrimAlpha), 0, 0, 0));
+                canvas.drawRect(0f, 0f, w, h, scrimPaint);
+            }
+        }
+    }
+
+    /** Soft 20dp left-edge drop shadow attached to the sliding live screen during forward push. */
+    private static final class CouiSlideEdgeShadowView extends View {
+        private final Paint paint = new Paint();
+        private int lastW = -1;
+
+        CouiSlideEdgeShadowView(Context ctx) {
+            super(ctx);
+            setClickable(false);
+            setFocusable(false);
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            int w = getWidth();
+            int h = getHeight();
+            if (w <= 0 || h <= 0) return;
+            if (w != lastW) {
+                lastW = w;
+                paint.setShader(new LinearGradient(
+                        0f, 0f, w, 0f,
+                        new int[]{0x00000000, 0x0B000000, 0x22000000},
+                        new float[]{0f, 0.55f, 1f},
+                        Shader.TileMode.CLAMP));
+            }
+            canvas.drawRect(0f, 0f, w, h, paint);
         }
     }
 
@@ -5543,6 +6399,8 @@ public final class CouiBrowserUiEnhancer {
         private final Path pieceClipPath = new Path();
         private boolean inTabSwitcher = false;
         private boolean inNtp = false;
+        private float lastHubToolbarAlpha = 0f;
+        private boolean hubToolbarDismissed = false;
         private View activeBackdropSource = null;
         private boolean isRecordingViewBackdrop = false;
         private boolean viewBackdropValid = false;
@@ -6220,6 +7078,24 @@ public final class CouiBrowserUiEnhancer {
                     }
                     if (cachedTabHolder == null || !cachedTabHolder.isAttachedToWindow()) {
                         cachedTabHolder = decor.findViewById(ID_TAB_SWITCHER_HOLDER);
+                        if (cachedTabHolder instanceof ViewGroup
+                                && !TAB_HOLDER_GUARD_TAG.equals(cachedTabHolder.getTag())) {
+                            final ViewGroup thGroup = (ViewGroup) cachedTabHolder;
+                            thGroup.setTag(TAB_HOLDER_GUARD_TAG);
+                            thGroup.setOnHierarchyChangeListener(new ViewGroup.OnHierarchyChangeListener() {
+                                @Override
+                                public void onChildViewAdded(View parent, View child) {
+                                    // Round 17: Strip Material You slate-blue tint SYNCHRONOUSLY before frame 0 draws!
+                                    try {
+                                        enforceTabSwitcherNoBlueFast(activity, thGroup, isDark);
+                                        styleTabSwitcherColors(activity, thGroup, isDark);
+                                    } catch (Throwable ignored) {}
+                                }
+
+                                @Override
+                                public void onChildViewRemoved(View parent, View child) {}
+                            });
+                        }
                     }
                     if (cachedUrlBar == null || !cachedUrlBar.isAttachedToWindow()) {
                         View uv = decor.findViewById(ID_URL_BAR);
@@ -6229,6 +7105,35 @@ public final class CouiBrowserUiEnhancer {
                     View tabHolder = cachedTabHolder;
                     boolean nowInTabSwitcher = (tabHolder != null && tabHolder.getVisibility() == View.VISIBLE
                             && tabHolder instanceof ViewGroup && ((ViewGroup) tabHolder).getChildCount() > 0);
+                    // Round 17: Unthrottled O(1) pre-draw guard on EVERY frame Tab Switcher is visible
+                    // so Chromium's HubToolbarViewBinder slate-blue tint NEVER reaches SurfaceFlinger,
+                    // AND accelerate hub_toolbar hide during Hub dismissal so "Search your tabs" NEVER
+                    // overlaps the expanding NTP thumbnail's "Search" heading!
+                    if (nowInTabSwitcher) {
+                        enforceTabSwitcherNoBlueFast(activity, tabHolder, isDark);
+                        View hubToolbar = tabHolder.findViewById(ID_HUB_TOOLBAR);
+                        if (hubToolbar != null) {
+                            View hubMain = tabHolder.findViewById(ID_HUB_MAIN_CONTAINER);
+                            float effA = Math.min(tabHolder.getAlpha(), hubToolbar.getAlpha());
+                            if (hubMain != null) effA = Math.min(effA, hubMain.getAlpha());
+                            if (!inTabSwitcher) {
+                                // Fresh entry into Tab Switcher
+                                hubToolbarDismissed = false;
+                                lastHubToolbarAlpha = effA;
+                            }
+                            if (effA < lastHubToolbarAlpha - 0.015f && effA < 0.96f) {
+                                // Hub is dismissing -> hide hub_toolbar immediately before tab thumbnail reaches top
+                                hubToolbarDismissed = true;
+                            } else if (effA >= 0.98f) {
+                                hubToolbarDismissed = false;
+                            }
+                            lastHubToolbarAlpha = effA;
+                            int wantVis = (hubToolbarDismissed || effA < 0.50f) ? View.INVISIBLE : View.VISIBLE;
+                            if (hubToolbar.getVisibility() != wantVis) {
+                                hubToolbar.setVisibility(wantVis);
+                            }
+                        }
+                    }
                     if (nowInTabSwitcher != inTabSwitcher) {
                         inTabSwitcher = nowInTabSwitcher;
                         stateChanged = true;
@@ -6236,7 +7141,10 @@ public final class CouiBrowserUiEnhancer {
                             selectedCenterIndex = 2; // Tabs active
                             viewBackdropDirty = true;
                             lastViewScrollHash = 0;
+                            styleTabSwitcherColors(activity, tabHolder, isDark);
                         } else {
+                            hubToolbarDismissed = false;
+                            lastHubToolbarAlpha = 0f;
                             viewBackdropValid = false;
                             viewBackdropDirty = true;
                             if (selectedCenterIndex == 2) selectedCenterIndex = 1; // Return to Home

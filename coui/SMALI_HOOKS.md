@@ -56,6 +56,18 @@ against (`chromium-ChromePublic.apk-default-807807974`). Re-derive them for any 
 | `La7e.K()V` (`updateSearchBoxVisibility`) | replace `invoke-virtual {p0}, La7e;->t()Z` check with `const/4 p0, 0x1` | Keeps the redesigned COUI `42dp` `"Search"` capsule persistently `View.VISIBLE` and tappable on every sub-settings screen while preserving `La7e.t()Z` for root `MainSettings` detection. |
 | `La7e.k()V` (`exitSearchState`) | unconditionally restore `id/search_box` (`0x7f010b05`) to `View.VISIBLE` when `v0 != null` | Ensures exiting an active Settings search from any sub-settings screen immediately restores the persistent search pill with zero flash. |
 
+## Round 17 — Method 1 full-screen ColorOS 17 Settings page slide transitions
+
+| Target | Patch | Why |
+|---|---|---|
+| `SettingsActivity.x1(Lk01, Lt86)` | immediate `return-void` | Disables Chromium's partial-pane `FragmentTransaction` slide animations (`0x7f030028..2b`) that slid cards under a static header. |
+| `SettingsActivity.onResume()` (forward push `this.q0 != null`) | before `x1`: call `CouiBrowserUiEnhancer.onSettingsBeforeForwardPush(this)` | Captures a 1:1 full-screen outgoing snapshot of `id/settings_activity` (including `AppBarLayout`, large/inline title, `"Search"` capsule, and cards) before the fragment swap so the entire incoming screen slides `+100% -> 0%` over the `-22%` parallaxing outgoing screen (`340ms`, `PathInterpolator(0.20, 0, 0, 1)`). |
+| `SettingsActivity.e(Lt86)` (back button / Esc pop) | before `Lda6.X()`: call `CouiBrowserUiEnhancer.onSettingsBeforeBackwardPop(this)` | Captures the full outgoing sub-settings snapshot before popping the back stack, reversing the full-screen slide cleanly (`0% -> +100%` over parent `-22% -> 0%`). |
+| `SettingsActivity.onDestroy()` | top of method: `CouiBrowserUiEnhancer.onSettingsDestroyed(this)` | Cancels any in-flight slide animation and recycles transient bitmaps cleanly on activity teardown. |
+| `Lo96.h(Lxz0)` & `Lo96.f()` (`FragmentManager` `OnBackPressedCallback`) | bypass half-pane predictive back in `h()` when host is `SettingsActivity`; before `Lda6.Z()` in `f()` call `CouiBrowserUiEnhancer.onFragmentManagerBeforeBackPop(p0)` | Ensures Android system back gestures trigger the exact same full-screen ColorOS 17 backward slide without partial-pane header/body tearing. |
+| `Ljqe.n()` / `Ljqe.c()` / `Ljqe.s(F)` (`SlidingPaneLayout` used by `MultiColumnSettings`) | `onSlidingPaneBeforeSlide(this, true/false)` in `n()`/`c()`; `trySnapSlidingPaneImmediate(this, v2, targetLeft)` after `Ld6i.k()` in `s(F)` | Captures full-screen outgoing snapshot before pane open/close and snaps `SlidingPaneLayout` immediately underneath so `CouiSettingsPageSlideController` animates the entire screen (`AppBarLayout` + title + Search pill + cards) as one rigid ColorOS 17 sheet. |
+| `MultiColumnSettings.Q1()` & `Lr4c.u()` (`PreferenceHeaderFragmentCompat`) | `onMultiColumnSettingsBeforePush(this)` + clear `TRANSIT_FRAGMENT_FADE (0x1003)` | Triggers the same Method 1 full-screen forward slide for nested sub-sub-settings pushes when the detail pane is already open. |
+
 ## Runtime notes (Java side)
 
 - The header glass is a dedicated, non-clickable child of `control_container`. It is appended last
